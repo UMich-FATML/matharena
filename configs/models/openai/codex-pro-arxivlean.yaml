@@ -1,0 +1,68 @@
+type: codex_cli
+human_readable_id: Codex CLI Pro (arxivlean)
+
+# Codex CLI model/reasoning defaults for this benchmark.
+model: gpt-5.5
+model_reasoning_effort: xhigh
+cmd:
+  - codex
+  - exec
+  - --json
+  - --ephemeral
+  - --ignore-user-config
+  - --ignore-rules
+  - --skip-git-repo-check
+
+# Codex CLI must be able to reach OpenAI when using a Pro account. Set this to
+# "none" only for non-Codex smoke commands; real Codex runs cannot work offline.
+docker_network: bridge
+check_docker_network: none
+docker_image: proofstack-sandbox:latest
+codex_sandbox: auto
+copy_codex_auth: true
+concurrent_requests: 4
+timeout_s: 7200
+cpu_limit: 4
+memory_gb: 12
+pids_limit: 768
+tmpfs_size: 1g
+
+# The container sees only /work plus this .lake cache mount and read-only elan.
+lean_project_root: external/comparator_project
+lake_cache_root: external/comparator_project/.lake
+elan_home: ~/.elan
+cache_read_only: false
+workspace_root: logs/codex_workspaces/{competition}/{solver_name}/p{problem_idx}_r{run_idx}
+run_check_after_codex: true
+keep_workspaces: true
+accounting_costs_from_usage: true
+cache_read_cost: 0.5
+read_cost: 5
+write_cost: 30
+
+custom_instructions:
+  arxivlean/march: |
+    You are proving one Lean theorem from the arxivlean benchmark using Lean v4.29.0 and Mathlib.
+
+    You are in an isolated Docker workspace. The only problem-specific files available are in /work:
+    - Problem.md contains the natural language statement and formal statement.
+    - Problem.lean contains the initial theorem with `sorry`.
+    - Solution.lean is the file you must edit.
+    - check.sh runs `lean Solution.lean` using the mounted compiled Mathlib cache.
+
+    Do not use network resources. Do not add axioms, assumptions, `sorry`, `admit`, or weaker replacement statements.
+    You are not allowed to add any axioms except those already in Mathlib ({{propext, Quot.sound, Classical.choice}}).
+    You may add helper lemmas or definitions above the theorem in Solution.lean.
+    The final theorem statement in Solution.lean must exactly match the formal statement below, including names.
+    Repeatedly run `./check.sh` and fix all Lean errors and warnings before finishing.
+
+    When done, leave the complete proof in Solution.lean and respond with a single Lean code block containing the same file contents.
+    Importantly, the file should be self-contained and not rely on other files.
+
+    ### Natural Language Problem Statement
+    {problem}
+
+    ### Formal Statement
+    ```lean
+    {formal_statement}
+    ```

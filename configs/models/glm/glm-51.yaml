@@ -14,3 +14,4 @@ other_params:
   parameters: 744
   active_parameters: 40
   huggingface_id: zai-org/GLM-5.1
+stream_openai_chat_completions: true

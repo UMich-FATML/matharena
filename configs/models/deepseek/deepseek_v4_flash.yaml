@@ -1,0 +1,18 @@
+model: deepseek-v4-flash
+api: deepseek
+max_tokens: 384000
+temperature: 1
+top_p: 1
+read_cost: 0.14
+cache_read_cost: 0.0028
+write_cost: 0.28
+reasoning_effort: max
+concurrent_requests: 64
+human_readable_id: DeepSeek-v4-Flash (Max)
+date: "2026-04-24"
+other_params:
+  open: true
+  creator: DeepSeek
+  parameters: 248
+  active_parameters: 13
+  huggingface_id: deepseek-ai/DeepSeek-V4-Flash

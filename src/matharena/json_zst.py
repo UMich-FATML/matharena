@@ -10,7 +10,8 @@ _ZSTD_DECOMPRESSOR = zstd.ZstdDecompressor()
 def load_json_zst(path):
     path = Path(path)
     with path.open("rb") as f:
-        data = _ZSTD_DECOMPRESSOR.decompress(f.read())
+        with _ZSTD_DECOMPRESSOR.stream_reader(f) as reader:
+            data = reader.read()
     return json.loads(data.decode("utf-8"))
 
 

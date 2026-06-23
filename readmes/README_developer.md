@@ -171,6 +171,7 @@ To add a new model add a config file in the `configs/models` folder. Each config
     - **google**: `GOOGLE_API_KEY`
     - **anthropic**: `ANTHROPIC_API_KEY`
     - **glm**: `GLM_API_KEY`
+    - **bigmodel**: `BIGMODEL_API_KEY`
     - **deepseek**: `DEEPSEEK_API_KEY`
     - **openrouter**: `OPENROUTER_API_KEY`
     - **vllm**: (runs locally; no API key required)

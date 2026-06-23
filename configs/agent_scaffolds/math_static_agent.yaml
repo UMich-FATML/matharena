@@ -1,0 +1,9 @@
+scaffold_name: static_math_agent
+core_components: configs/agent_scaffolds/math_core_components.yaml
+n_threads: 1
+max_concurrent_calls: 8
+n_approach_solutions: 3
+use_no_approach: true
+n_solutions_per_approach: 1
+n_verifications_per_solution: 1
+run_idx: 'math_static_agent_{model_name}_{problem_id}_{run_idx}_{parameter_hash}'

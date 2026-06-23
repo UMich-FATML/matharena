@@ -6,7 +6,7 @@ from tqdm import tqdm
 
 from matharena.api_client import APIClient
 from matharena.arxivbench_utils import (
-    ensure_ocr,
+    ensure_ocr_batch,
     extract_json,
     get_latest_fields,
     get_latest_pair,
@@ -57,7 +57,11 @@ def main():
     parser.add_argument("--annotation-filename", default=None, help="Annotation filename to read/write.")
     args = parser.parse_args()
 
-    prompt_path = args.prompt or ("arxivmath/prompts/broken/false_fulltext_review.md" if args.false else "arxivmath/prompts/arxiv/fulltext_review.md")
+    prompt_path = args.prompt or (
+        "arxivmath/prompts/broken/false_fulltext_review.md"
+        if args.false
+        else "arxivmath/prompts/arxiv/fulltext_review.md"
+    )
     annotation_filename = args.annotation_filename or (
         LEAN_ANNOTATION_FILENAME
         if args.lean
@@ -89,11 +93,15 @@ def main():
     review_ids = []
     for paper_id in paper_ids:
         annotation = load_annotation(args.paper_root, paper_id, annotation_filename)
-        if should_review(annotation, overwrite=args.overwrite, key=args.key, lean_mode=args.lean):
+        if should_review(
+            annotation,
+            overwrite=args.overwrite,
+            key=args.key,
+            lean_mode=args.lean,
+        ):
             review_ids.append(paper_id)
 
-    queries = []
-    query_paper_ids = []
+    query_inputs = []
     for paper_id in tqdm(review_ids):
         annotation = load_annotation(args.paper_root, paper_id, annotation_filename)
         question = answer = original_statement = perturbed_statement = falsity_explanation = statement = formalized_statement = ""
@@ -118,8 +126,57 @@ def main():
                 if not latest:
                     continue
                 question, answer = latest
-        full_text = "" if args.skip_ocr or args.key == "solid_authors" else ensure_ocr(paper_id, redo=args.redo_ocr)
         metadata = load_metadata(args.paper_root, paper_id)
+        query_inputs.append(
+            (
+                paper_id,
+                metadata,
+                question,
+                answer,
+                original_statement,
+                formalized_statement,
+                perturbed_statement,
+                falsity_explanation,
+                statement,
+            )
+        )
+
+        if args.limit and len(query_inputs) >= args.limit:
+            break
+
+    if not query_inputs:
+        print("No papers need review.")
+        return
+
+    full_texts = {}
+    if not args.skip_ocr and args.key != "solid_authors":
+        full_texts = ensure_ocr_batch(
+            [paper_id for paper_id, *_ in query_inputs],
+            redo=args.redo_ocr,
+        )
+        missing_text_ids = {paper_id for paper_id, *_ in query_inputs if paper_id not in full_texts}
+        for paper_id in sorted(missing_text_ids):
+            annotation = load_annotation(args.paper_root, paper_id, annotation_filename)
+            annotation["keep"] = False
+            save_annotation(args.paper_root, paper_id, annotation, annotation_filename)
+            discarded.append(paper_id)
+        query_inputs = [query_input for query_input in query_inputs if query_input[0] not in missing_text_ids]
+        if not query_inputs:
+            return
+
+    queries = []
+    query_paper_ids = []
+    for (
+        paper_id,
+        metadata,
+        question,
+        answer,
+        original_statement,
+        formalized_statement,
+        perturbed_statement,
+        falsity_explanation,
+        statement,
+    ) in query_inputs:
         prompt = prompt_template.format(
             question=question,
             answer=answer,
@@ -128,19 +185,13 @@ def main():
             perturbed_statement=perturbed_statement,
             falsity_explanation=falsity_explanation,
             statement=statement,
-            full_text=full_text or "",
+            full_text=full_texts.get(paper_id, ""),
             title=metadata.get("title") or "",
             authors=", ".join([f"{author['forenames']} {author['keyname']}" for author in metadata.get("authors", [])]),
             abstract=metadata.get("abstract") or "",
         )
         queries.append([{"role": "user", "content": prompt}])
         query_paper_ids.append(paper_id)
-
-        if args.limit and len(queries) >= args.limit:
-            break
-    if not queries:
-        print("No papers need review.")
-        return
 
     for idx, conversation, cost in client.run_queries(queries):
         conversation = normalize_conversation(conversation)

@@ -9,7 +9,32 @@ import shutil
 
 
 def get_as_list(string):
-    return string.replace('"', "").replace("[", "").replace("]", "").split(',')
+    return [item for item in string.replace('"', "").replace("[", "").replace("]", "").split(',') if item]
+
+
+def read_optional_text(path):
+    if os.path.exists(path):
+        return open(path, "r").read()
+    return None
+
+
+def is_empty_value(value):
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    if isinstance(value, float) and pd.isna(value):
+        return True
+    if isinstance(value, (list, tuple, set)):
+        return all(is_empty_value(item) for item in value)
+    return False
+
+
+def drop_empty_optional_columns(df):
+    for column in ["grading_scheme", "problem_type"]:
+        if column in df.columns and df[column].map(is_empty_value).all():
+            df = df.drop(columns=[column])
+    return df
 
 
 if __name__ == "__main__":
@@ -79,7 +104,7 @@ if __name__ == "__main__":
                     "answer": formal_statement,
                     "formal_statement": formal_statement,
                 }
-                if formal_idx in problem_types:
+                if formal_idx in problem_types and problem_types[formal_idx]:
                     data_dict["problem_type"] = problem_types[formal_idx]
                 data_dict.update(source.get(formal_idx, {}))
                 data_dict.update(source_metadata.get(formal_idx, {}))
@@ -120,7 +145,11 @@ if __name__ == "__main__":
                 shutil.copy(problem_file, temp_problem_file)
                 data_dict["file_name"] = f"{comp.replace('/', '--')}_problem_{idx}.png"
 
-            if idx in problem_types:
+            original_problem = read_optional_text(os.path.join(folder, "original", f"{idx}.tex"))
+            if original_problem is not None:
+                data_dict["original_problem"] = original_problem
+
+            if idx in problem_types and problem_types[idx]:
                 data_dict["problem_type"] = problem_types[idx]
             data_dict.update(source.get(idx, {}))
             data_dict.update(source_metadata.get(idx, {}))
@@ -140,6 +169,7 @@ if __name__ == "__main__":
             logger.info(f"Added {len(df) - len(existing_df)} new samples to existing dataset")
         except Exception as e:
             logger.warning(f"Could not load existing dataset, creating new one. Error: {e}")
+    df = drop_empty_optional_columns(df)
 
     if not args.visual_dataset:
         if len(df) == 0:

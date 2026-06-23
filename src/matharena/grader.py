@@ -165,6 +165,7 @@ def extract_and_grade(messages, output_tokens, gold_answer, competition_config, 
     is_lean_comp = competition_config.get("lean", False)
     use_strict_parsing = competition_config.get("strict_parsing", False)
     use_exact_match = competition_config.get("exact_match_parsing", False)
+    use_typed_delimiters = competition_config.get("typed_delimited_answers", True)
 
     is_broken, reason = is_conversation_broken(messages)
     if is_broken:
@@ -180,7 +181,11 @@ def extract_and_grade(messages, output_tokens, gold_answer, competition_config, 
         model_answer, warning = extract_boxed_answer(last_message, list_answer=gold_answer_is_list)
     else:
         model_answer, warning = extract_answer(
-            last_message, strict_parsing=use_strict_parsing, parse=True, list_answer=gold_answer_is_list
+            last_message,
+            strict_parsing=use_strict_parsing,
+            parse=True,
+            list_answer=gold_answer_is_list,
+            typed_delimiters=use_typed_delimiters,
         )
 
     if gold_answer.startswith("hash:"):
@@ -207,7 +212,9 @@ def extract_and_grade(messages, output_tokens, gold_answer, competition_config, 
         else:
             is_correct = _normalize_exact_match(str(model_answer)) == _normalize_exact_match(str(gold_answer))
     else:
-        typed_gold_answer, _ = parse_answer(gold_answer, list_answer=gold_answer_is_list)
+        typed_gold_answer, _ = parse_answer(
+            gold_answer, list_answer=gold_answer_is_list, typed_delimiters=use_typed_delimiters
+        )
         is_correct = check_answers(model_answer, typed_gold_answer)
 
     if not is_correct and check_output_length(output_tokens):

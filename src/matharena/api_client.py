@@ -12,8 +12,11 @@ from datetime import datetime
 import anthropic
 import requests
 from anthropic.types import TextBlock, ThinkingBlock
+from anthropic.types.beta import BetaTextBlock, BetaThinkingBlock
 from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
 from anthropic.types.messages.batch_create_params import Request
+from anthropic.types.beta.message_create_params import MessageCreateParamsNonStreaming as BetaMessageCreateParamsNonStreaming
+from anthropic.types.beta.messages.batch_create_params import Request as BetaRequest
 from loguru import logger
 from openai import OpenAI, RateLimitError
 from together import Together
@@ -32,6 +35,19 @@ except ImportError:
 class APIClient:
     """A client that queries various LLM APIs."""
 
+    @staticmethod
+    def _parse_apiquery_custom_id(custom_id):
+        if not isinstance(custom_id, str) or not custom_id.startswith("apiquery-"):
+            raise ValueError(f"Unexpected custom_id format: {custom_id}")
+        return int(custom_id.split("-")[-1])
+
+    @staticmethod
+    def _lookup_apiquery_local_idx(custom_id, api_idx_to_local_idx):
+        api_idx = APIClient._parse_apiquery_custom_id(custom_id)
+        if api_idx not in api_idx_to_local_idx:
+            raise KeyError(f"Missing custom_id mapping for {custom_id}")
+        return api_idx, api_idx_to_local_idx[api_idx]
+
     def __init__(
         self,
         model,
@@ -40,6 +56,7 @@ class APIClient:
         api="openai",
         api_key_env=None,
         base_url=None,
+        default_headers=None,
         max_retries=3,
         max_retries_inner=25,
         concurrent_requests=30,
@@ -62,6 +79,7 @@ class APIClient:
         max_tool_calls=0,
         cache_write_cost=0,
         tools=None,
+        anthropic_betas=None,
         **kwargs,
     ):
         """Initializes the APIClient object and params. All prompts are set at run_queries invocation.
@@ -71,6 +89,7 @@ class APIClient:
             timeout (int, optional): The timeout for API requests in seconds. Defaults to 9000.
             max_tokens (int, optional): The maximum number of tokens to generate. Defaults to None.
             api (str, optional): The API to use. Defaults to 'openai'.
+            default_headers (dict, optional): Default headers to send with OpenAI-compatible clients.
             max_retries (int, optional): The maximum number of retries for a failed query. Defaults to 50.
             concurrent_requests (int, optional): The number of concurrent requests to make. Defaults to 30.
             no_system_messages (bool, optional): Whether to disable system messages. Defaults to False.
@@ -141,6 +160,7 @@ class APIClient:
         self.write_cost = write_cost
         self.background = background
         self.batch_processing = batch_processing
+        self.anthropic_betas = anthropic_betas or []
         self.use_openai_responses_api = use_openai_responses_api
         self.use_gdm_tools = use_gdm_tools
         self.use_google_internal_tools = False
@@ -170,6 +190,7 @@ class APIClient:
         # Prep api
         self.api = api
         self.base_url = base_url
+        self.default_headers = default_headers
         self.api_key_env = api_key_env
         self.api_key = None
         self.terminated = False
@@ -234,6 +255,15 @@ class APIClient:
             self.api_key = os.getenv("STEPFUN_API_KEY")
             self.base_url = "https://api.stepfun.ai/v1"
             self.api = "openai"
+        elif self.api == "insait":
+            metadata = json.dumps({
+                "project_id": os.environ["CF_PROJECT_ID"],
+                "user_id": os.environ["CF_USER_ID"],
+            })
+            self.api_key = os.getenv("INSAIT_API_KEY")
+            self.base_url = "https://ai-gateway.plain-flower-4887.workers.dev/compat"
+            self.default_headers = {"cf-aig-metadata": metadata}
+            self.api = "openai"
         elif self.api == "openai":
             self.api_key = os.getenv("OPENAI_API_KEY")
         elif self.api == "together":
@@ -257,6 +287,10 @@ class APIClient:
             self.api_key = os.getenv("GLM_API_KEY")
             self.base_url = "https://api.z.ai/api/paas/v4/"
             self.api = "openai"
+        elif self.api == "bigmodel":
+            self.api_key = os.getenv("BIGMODEL_API_KEY")
+            self.base_url = "https://open.bigmodel.cn/api/paas/v4/"
+            self.api = "openai"
         elif self.api == "tiiuae":
             self.api_key = os.getenv("TIIUAE_API_KEY")
             self.base_url = "https://falcon-stage.blueoc.tech/v1"
@@ -272,6 +306,10 @@ class APIClient:
         elif self.api == "deepseek_special":
             self.api_key = os.getenv("DEEPSEEK_API_KEY")
             self.base_url = "https://api.deepseek.com/v3.2_speciale_expires_on_20251215"
+            self.api = "openai"
+        elif self.api == "meta":
+            self.api_key = os.getenv("META_API_KEY")
+            self.base_url = "https://api.llama.com/v1alpha"
             self.api = "openai"
         elif self.api == "openrouter":
             self.api_key = os.getenv("OPENROUTER_API_KEY")
@@ -342,6 +380,8 @@ class APIClient:
             start_time = time.time()
             if self.api == "openai":
                 results_batch = self._openai_batch_processing(queries, indices)
+            elif self.anthropic_betas:
+                results_batch = self._anthropic_batch_processing_beta(queries, indices)
             else:
                 results_batch = self._anthropic_batch_processing(queries, indices)
             end_time = time.time()  # pack all time into first index (since batch)
@@ -534,9 +574,9 @@ class APIClient:
         """
         messages = []
         for content_block in content:
-            if isinstance(content_block, ThinkingBlock):
+            if isinstance(content_block, (ThinkingBlock, BetaThinkingBlock)):
                 messages.append({"role": "assistant", "type": "cot", "content": content_block.thinking})
-            elif isinstance(content_block, TextBlock):
+            elif isinstance(content_block, (TextBlock, BetaTextBlock)):
                 messages.append({"role": "assistant", "type": "response", "content": content_block.text})
                 break
         return messages
@@ -672,7 +712,9 @@ class APIClient:
             }
             jsonl_queries.append(request)
 
-        client = OpenAI(api_key=self.api_key, base_url=self.base_url, max_retries=0)
+        client = OpenAI(
+            api_key=self.api_key, base_url=self.base_url, default_headers=self.default_headers, max_retries=0
+        )
 
         # create temp file
         tmp = tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False)
@@ -731,7 +773,7 @@ class APIClient:
             json_response.append(json.loads(line))
 
         for result in json_response:
-            index = int(result["custom_id"].split("-")[-1])
+            index = self._parse_apiquery_custom_id(result["custom_id"])
             if result["response"]["status_code"] != 200:
                 repeat_indices.append(index)
                 logger.error(f"Error: {result['response']['status_code']}")
@@ -831,8 +873,9 @@ class APIClient:
                 break
             time.sleep(10)
 
-        results = []
+        results = [None for _ in range(len(queries))]
         repeat_indices = []
+        api_idx_to_local_idx = {api_idx: local_idx for local_idx, api_idx in enumerate(indices)}
 
         while True:
             try:
@@ -844,15 +887,20 @@ class APIClient:
                 logger.error(f"Error connecting to batch Anthropic. Retrying in 10 seconds. Exception: {e}")
                 time.sleep(10)
 
-        for i, raw_result in enumerate(raw_results):
-            request_logger.log_response(ts=ts, batch_idx=i, response=raw_result.model_dump())
+        for raw_result in raw_results:
+            try:
+                api_idx, local_idx = self._lookup_apiquery_local_idx(raw_result.custom_id, api_idx_to_local_idx)
+            except (KeyError, ValueError) as exc:
+                logger.error(f"Received unexpected Anthropic batch result custom_id={raw_result.custom_id}: {exc}")
+                continue
+            request_logger.log_response(ts=ts, batch_idx=api_idx, response=raw_result.model_dump())
             if raw_result.result.type == "succeeded":
                 new_messages = self._get_messages_from_anthropic_content(raw_result.result.message.content)
-                conversation = [m.copy() for m in queries[i]] + new_messages
+                conversation = [m.copy() for m in queries[local_idx]] + new_messages
                 input_tokens, output_tokens, cached_input_tokens, _ = self._extract_usage_tokens(
                     raw_result.result.message.usage
                 )
-                results.append(
+                results[local_idx] = (
                     self.InternalRequestResult(
                         conversation,
                         input_tokens,
@@ -862,16 +910,145 @@ class APIClient:
                     )
                 )
             else:
-                results.append(None)
-                repeat_indices.append(i)
+                repeat_indices.append(local_idx)
                 if raw_result.result.type == "errored":
                     logger.error(raw_result.result.error)
+
+        for i in range(len(results)):
+            if results[i] is None and i not in repeat_indices:
+                repeat_indices.append(i)
 
         if len(repeat_indices) > 0:
             logger.info(f"Repeating {len(repeat_indices)} queries.")
             repeat_queries = [queries[i] for i in repeat_indices]
             repeat_api_indices = [indices[i] for i in repeat_indices]
             repeat_results = self._anthropic_batch_processing(repeat_queries, repeat_api_indices, retry_idx + 1)
+            for i, result in zip(repeat_indices, repeat_results):
+                results[i] = result
+
+        return results
+
+    def _anthropic_batch_processing_beta(self, queries, indices, retry_idx=0):
+        """Processes a batch of queries using the Anthropic beta Message Batches API.
+
+        Mirrors _anthropic_batch_processing but goes through the beta namespace and passes
+        self.anthropic_betas (e.g. ["output-300k-2026-03-24"]) so betas such as the 300k-output
+        cap are enabled. Routed to from run_queries when anthropic_betas is configured.
+
+        Args:
+            queries (list[MessageList]): A list of queries to run, each is a MessageList in API format.
+            retry_idx (int, optional): Current retry index starting from 0.
+
+        Returns:
+            list: A list of InternalRequestResult or None.
+        """
+        if retry_idx >= self.max_retries:
+            return [None for _ in range(len(queries))]
+
+        client = anthropic.Anthropic(
+            api_key=self.api_key,
+            max_retries=0,
+        )
+
+        requests = []
+        ts = time.strftime("%m%d-%H:%M:%S", time.localtime(time.time()))
+        ts += f".{datetime.now().microsecond:06d}"
+        for idx, query in zip(indices, queries):
+            system_message, anthropic_messages = self._convert_to_anthropic_messages(query)
+            kwargs_here = self.kwargs.copy()
+            if system_message is not anthropic.NOT_GIVEN:
+                kwargs_here["system"] = system_message
+
+            payload = {
+                "custom_id": f"apiquery-{idx}",
+                "params": {"model": self.model, "messages": anthropic_messages, **kwargs_here},
+            }
+            request_logger.log_request(ts=ts, batch_idx=idx, request=payload)
+            request = BetaRequest(
+                custom_id=f"apiquery-{idx}",
+                params=BetaMessageCreateParamsNonStreaming(model=self.model, messages=anthropic_messages, **kwargs_here),
+            )
+            requests.append(request)
+
+        message_batch = client.beta.messages.batches.create(betas=self.anthropic_betas, requests=requests)
+
+        logger.info(f"Running {len(queries)} queries with batch ID {message_batch.id}")
+
+        current_request_counts = dict(message_batch.request_counts)
+
+        while True:
+            try:
+                message_batch = client.beta.messages.batches.retrieve(
+                    message_batch_id=message_batch.id,
+                )
+            except Exception as e:  # noqa: E722 E841
+                logger.warning(f"Error connecting to Anthropic. Retrying in 10s. Exception: {e}")
+                pass
+            if any(
+                [
+                    current_request_counts[key] != dict(message_batch.request_counts)[key]
+                    for key in current_request_counts
+                ]
+            ):
+                current_request_counts = dict(message_batch.request_counts)
+                error_sum = sum([current_request_counts[key] for key in current_request_counts if "succeeded" != key])
+                logger.info(
+                    f"Succeeded Requests Progress: {current_request_counts['succeeded']}/{len(queries)}. Errors: {error_sum}"
+                )
+            if message_batch.processing_status == "ended":
+                break
+            time.sleep(10)
+
+        results = [None for _ in range(len(queries))]
+        repeat_indices = []
+        api_idx_to_local_idx = {api_idx: local_idx for local_idx, api_idx in enumerate(indices)}
+
+        while True:
+            try:
+                raw_results = client.beta.messages.batches.results(
+                    message_batch_id=message_batch.id,
+                )
+                break
+            except Exception as e:
+                logger.error(f"Error connecting to batch Anthropic. Retrying in 10 seconds. Exception: {e}")
+                time.sleep(10)
+
+        for raw_result in raw_results:
+            try:
+                api_idx, local_idx = self._lookup_apiquery_local_idx(raw_result.custom_id, api_idx_to_local_idx)
+            except (KeyError, ValueError) as exc:
+                logger.error(f"Received unexpected Anthropic batch result custom_id={raw_result.custom_id}: {exc}")
+                continue
+            request_logger.log_response(ts=ts, batch_idx=api_idx, response=raw_result.model_dump())
+            if raw_result.result.type == "succeeded":
+                new_messages = self._get_messages_from_anthropic_content(raw_result.result.message.content)
+                conversation = [m.copy() for m in queries[local_idx]] + new_messages
+                input_tokens, output_tokens, cached_input_tokens, _ = self._extract_usage_tokens(
+                    raw_result.result.message.usage
+                )
+                results[local_idx] = (
+                    self.InternalRequestResult(
+                        conversation,
+                        input_tokens,
+                        output_tokens,
+                        cached_input_tokens=cached_input_tokens,
+                        n_retries=retry_idx,
+                    )
+                )
+            else:
+                repeat_indices.append(local_idx)
+                if raw_result.result.type == "errored":
+                    logger.error(raw_result.result.error)
+
+        for i in range(len(results)):
+            if results[i] is None and i not in repeat_indices:
+                repeat_indices.append(i)
+
+        if len(repeat_indices) > 0:
+            logger.info(f"Repeating {len(repeat_indices)} queries.")
+            repeat_queries = [queries[i] for i in repeat_indices]
+            repeat_api_indices = [indices[i] for i in repeat_indices]
+            repeat_results = self._anthropic_batch_processing_beta(repeat_queries, repeat_api_indices, retry_idx + 1)
             for i, result in zip(repeat_indices, repeat_results):
                 results[i] = result
 
@@ -1300,7 +1477,13 @@ class APIClient:
         if is_together:
             client = Together(timeout=self.timeout, max_retries=0)
         else:
-            client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=self.timeout, max_retries=0)
+            client = OpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                default_headers=self.default_headers,
+                timeout=self.timeout,
+                max_retries=0,
+            )
 
         if self.use_openai_responses_api:
             return self._openai_query_responses_api(client, idx, query, ignore_tool_calls=ignore_tool_calls)
@@ -1472,7 +1655,7 @@ class APIClient:
                         "id": out.id,
                         "summary": [{"text": b.text, "type": b.type} for b in out.summary],
                         "type": out.type,
-                        "content": out.content,
+                        "content": [c.model_dump() if hasattr(c, "model_dump") else c for c in out.content] if out.content else out.content,
                         "encrypted_content": out.encrypted_content,
                         # "status": out.status,
                     }

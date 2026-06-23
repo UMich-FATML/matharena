@@ -1,9 +1,10 @@
 # Verification Task
 
-You are verifying a proposed question-answer pair.
+You are verifying a proposed question-answer pair for a benchmark. Your task is to determine whether the question is self-contained and answerable without missing definitions or context.
 
 Main question: Is this question answerable or are there missing elements? 
 In other words, can the question be understood and answered without additional context or definitions?
+This includes missing definitions of variables or terms used in the question. The interpretation of the question depends on the exact convention used for these terms, and there are several conventions in the literature.
 
 Additionally, remove the question if any of the following criteria are met:
 - The answer is $0$ or $1$, or the answer is the same as the variable in the question, e.g. "Find X in function of $n$" with answer "$n$" (small variations like $n+1$ are fine). This is too guessable and I want to focus on more complex questions.

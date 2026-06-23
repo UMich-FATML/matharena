@@ -9,7 +9,8 @@ from loguru import logger
 from tqdm import tqdm
 
 from matharena.api_client import APIClient
-from matharena.solvers import BaseSolver, SelfcheckAgent, SolverResponse, DeepSeekMathAgent
+from matharena.solvers import BaseSolver, SelfcheckAgent, SolverResponse, MathAgent, StaticMathAgent, DeepSeekMathAgent, RSAAgent, NomosAgent
+
 
 class _PromptFields(UserDict):
     def __missing__(self, key):
@@ -21,7 +22,10 @@ class AgentPool(BaseSolver):
     A solver that manages a pool of agents to solve problems.
     """
 
-    AGENT_CLASSES = {"selfcheck": SelfcheckAgent, "deepseek_agent": DeepSeekMathAgent}  # Add other agent classes as needed
+    AGENT_CLASSES = {"selfcheck": SelfcheckAgent,
+                     "math_agent": MathAgent, "static_math_agent": StaticMathAgent,
+                     "deepseek_agent": DeepSeekMathAgent, "rsa": RSAAgent,
+                     "nomos": NomosAgent}  # Add other agent classes as needed
 
     def __init__(self, solver_config, default_prompt_template, default_api_client_args, last_chance_prompt):
         super().__init__(solver_config, default_prompt_template, default_api_client_args, last_chance_prompt)

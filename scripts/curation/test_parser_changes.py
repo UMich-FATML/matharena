@@ -20,13 +20,14 @@ if __name__ == "__main__":
     # get all yaml files recursively in the competition config folder
     yaml_files = glob.glob(os.path.join(args.competition_configs_folder, "**/*.yaml"), recursive=True)
     for yaml_file in yaml_files:
-        if "improofbench" in yaml_file or "bebras" in yaml_file:
+        if "improofbench" in yaml_file or "bebras" in yaml_file or "arxiv_false" in yaml_file:
             continue
         with open(yaml_file, "r") as f:
             competition_config = yaml.safe_load(f)
         comp = yaml_file.replace(".yaml", "").replace(args.competition_configs_folder + "/", "")
         if not competition_config.get("final_answer", True):
             continue
+        typed_delimiters = competition_config.get("typed_delimited_answers", True)
         
         path_to_json_files = os.path.join(args.output_folder, comp, f"**/*{OUTPUT_JSON_SUFFIX}")
         json_files = glob.glob(path_to_json_files, recursive=True)
@@ -35,7 +36,9 @@ if __name__ == "__main__":
             gold_answer = data["gold_answer"]
             list_answer = "," in str(gold_answer)
             try:
-                parsed_gold_answer, _ = parse_answer(gold_answer, list_answer=list_answer)
+                parsed_gold_answer, _ = parse_answer(
+                    gold_answer, list_answer=list_answer, typed_delimiters=typed_delimiters
+                )
             except:
                 continue # old format, model not used anymore
             
@@ -45,7 +48,7 @@ if __name__ == "__main__":
                     continue
                 extraction, _ = extract_answer(data["messages"][i][-1]['content'], 
                                                competition_config.get("strict_parsing", False), 
-                                               True, list_answer)
+                                               True, list_answer, typed_delimiters=typed_delimiters)
 
                 check_answer = check_answers(parsed_gold_answer, extraction)
                 if data["correct"][i] != (check_answer == True):

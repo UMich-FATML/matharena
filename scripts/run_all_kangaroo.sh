@@ -11,5 +11,5 @@ COMPS=(
 echo "Running on comps: ${COMPS[*]} with model $MODEL"
 uv run python3 scripts/run.py \
   --comp "${COMPS[@]}" \
-  --n 4 \
+  --n 2 \
   --models "$MODEL"

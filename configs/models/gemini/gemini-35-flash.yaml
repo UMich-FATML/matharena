@@ -1,0 +1,16 @@
+model: gemini-3.5-flash
+api: google
+temperature: null
+top_p: null
+concurrent_requests: 64
+max_tokens: 65536
+cache_read_cost: 0.15
+read_cost: 1.5
+tool_choice: auto
+write_cost: 9
+human_readable_id: Gemini 3.5 Flash
+date: "2026-05-19"
+reasoning_effort: high
+other_params:
+  open: false
+  creator: Google

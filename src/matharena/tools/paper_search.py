@@ -195,49 +195,85 @@ def pil_to_data_uri(img: Image.Image) -> str:
     b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
     return f"data:{mime};base64,{b64}"
 
-def ocr(pdf_path, store_filename, store_folder=STORE_FOLDER):
-    model_config = yaml.safe_load(open(MODEL_CONFIG_PATH, 'r'))
-    del model_config["human_readable_id"]
-    del model_config["date"]
+def ocr_batch(papers, store_folder=STORE_FOLDER, page_batch_size=None, dpi=300):
+    papers = list(papers)
+    if not papers:
+        return {}
+
+    with open(MODEL_CONFIG_PATH, "r", encoding="utf-8") as f:
+        model_config = yaml.safe_load(f)
+    model_config.pop("human_readable_id", None)
+    model_config.pop("date", None)
     client = APIClient(**model_config)
+    if page_batch_size is None:
+        page_batch_size = max(1, client.concurrent_requests * 4)
 
-    doc = fitz.open(pdf_path)
-    total_pages = doc.page_count
-    md_pages = []
-    prompt = "Text Recognition:"
+    docs = []
+    output_paths = {}
+    saved_papers = set()
+    try:
+        os.makedirs(store_folder, exist_ok=True)
+        for pdf_path, store_filename in papers:
+            doc = fitz.open(pdf_path)
+            docs.append((store_filename, doc, [None] * doc.page_count))
 
-    pages_queries = []
-    
-    for i in range(total_pages):
-        img = pdf_page_to_pil(doc, i)
-        data_uri = pil_to_data_uri(img)
-        pages_queries.append([
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": data_uri
+        remaining_pages = [doc.page_count for _, doc, _ in docs]
+
+        def save_paper(paper_idx):
+            store_filename, _, md_pages = docs[paper_idx]
+            output_path = os.path.join(store_folder, f"{store_filename}.md")
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write("\n\n".join(page or "" for page in md_pages))
+            output_paths[store_filename] = output_path
+            saved_papers.add(paper_idx)
+
+        page_refs = [
+            (paper_idx, page_idx)
+            for paper_idx, (_, doc, _) in enumerate(docs)
+            for page_idx in range(doc.page_count)
+        ]
+        logger.info(
+            f"OCR batch: {len(docs)} PDFs, {len(page_refs)} pages, page_batch_size={page_batch_size}."
+        )
+
+        for start in range(0, len(page_refs), page_batch_size):
+            chunk_refs = page_refs[start : start + page_batch_size]
+            pages_queries = []
+            for paper_idx, page_idx in chunk_refs:
+                img = pdf_page_to_pil(docs[paper_idx][1], page_idx, dpi=dpi)
+                data_uri = pil_to_data_uri(img)
+                pages_queries.append(
+                    [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image_url", "image_url": {"url": data_uri}},
+                                {"type": "text", "text": "Text Recognition:"},
+                            ],
                         }
-                    },
-                    {
-                        "type": "text",
-                        "text": prompt
-                    }
-                ]
-            }
-        ])
+                    ]
+                )
 
-    md_pages = [None] * total_pages
-    for idx, result, _ in client.run_queries(pages_queries, no_tqdm=True):
-        markdown = result[-1]["content"].strip()
-        md_pages[idx] = f"##### Page {idx + 1} #####\n\n{markdown}"
+            for local_idx, result, _ in client.run_queries(pages_queries, no_tqdm=True):
+                paper_idx, page_idx = chunk_refs[local_idx]
+                markdown = (result[-1].get("content") or "").strip() if result else ""
+                if docs[paper_idx][2][page_idx] is None:
+                    remaining_pages[paper_idx] -= 1
+                docs[paper_idx][2][page_idx] = f"##### Page {page_idx + 1} #####\n\n{markdown}"
+                if remaining_pages[paper_idx] == 0 and paper_idx not in saved_papers:
+                    save_paper(paper_idx)
 
-    all_md = "\n\n".join(md_pages)
-    os.makedirs(store_folder, exist_ok=True)
-    with open(os.path.join(store_folder, f"{store_filename}.md"), 'w') as f:
-        f.write(all_md)
+        for paper_idx in range(len(docs)):
+            if paper_idx not in saved_papers:
+                save_paper(paper_idx)
+        return output_paths
+    finally:
+        for _, doc, _ in docs:
+            doc.close()
+
+
+def ocr(pdf_path, store_filename, store_folder=STORE_FOLDER):
+    ocr_batch([(pdf_path, store_filename)], store_folder=store_folder)
 
 def ocr_paper(paper_id):
     pdf_path = os.path.join(STORE_FOLDER, f"{paper_id}.pdf")

@@ -12,6 +12,7 @@ from loguru import logger
 PY_LIBRARIES = [
     "pandas",
     "numpy",
+    "scipy",
     "scikit-learn",
     "sympy",
     "gmpy2",
@@ -20,6 +21,11 @@ PY_LIBRARIES = [
 
 def execute_code_long(code, lang):
     return execute_code(code, lang, exec_timeout=60 * 30)  # 30 minutes
+
+
+def execute_python_code(code, exec_timeout=120):
+    return execute_code(code, "python", exec_timeout=exec_timeout)
+
 
 def run_code(code, lang, code_runner, exec_timeout=120):
     if lang == "python":

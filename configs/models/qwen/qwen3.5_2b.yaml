@@ -2,7 +2,7 @@ model: qwen/qwen3.5-2b
 api: custom
 api_key_env: VLLM_API_KEY
 base_url: http://localhost:8004/v1
-max_tokens: 65500
+max_tokens: 81920
 temperature: 1.0
 top_p: 0.95
 presence_penalty: 1.5
@@ -10,6 +10,8 @@ extra_body:
   top_k: 20
   min_p: 0.0
   repetition_penalty: 1.0
+  chat_template_kwargs:
+    enable_thinking: true
 concurrent_requests: 64
 read_cost: 0.0
 write_cost: 0.0
@@ -21,4 +23,3 @@ other_params:
   parameters: 2.0
   active_parameters: 2.0
   huggingface_id: Qwen/Qwen3.5-2B
-

@@ -128,6 +128,7 @@ def main():
     parser.add_argument("--sleep", type=float, default=0.1, help="Seconds to sleep between records")
     parser.add_argument("--skip-existing", action="store_true", help="Skip papers already downloaded")
     args = parser.parse_args()
+    args.until_date = min(args.until_date, datetime.utcnow().date().isoformat())
 
     ensure_dir(args.outdir)
     total = 0

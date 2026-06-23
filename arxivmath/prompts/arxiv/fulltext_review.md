@@ -39,8 +39,8 @@ Additional instructions:
     You only need to add assumptions in-so-far as they are strictly necessary for completeness.
     Do not add any hints, simplifications, or things that could be considered intermediate steps.
     The question is not supposed to match a single theorem/lemma number from the paper, but rather be a challenging problem that requires deep understanding of the entire paper. Therefore, do not restrict the question to a specific section or result unless absolutely necessary. The question needs to remain as challenging as possible, to fully benchmark advanced AI systems with deep understanding and reasoning capabilities.
-
-### Current question ###
+9. **Self-contained**
+    If there exist several conventions in the literature for interpreting a certain term or variable, and the paper uses one of these conventions, you must clarify which convention is used in the question by rigorously defining the term or variable as it is defined in the paper. This is crucial for ensuring the question is self-contained and unambiguous, and can be answered without external context.
 {question}
 
 ### Current answer ###

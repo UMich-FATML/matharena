@@ -16,6 +16,7 @@ When editing:
 - keep the perturbed statement maximally plausible
 - ensure the perturbed statement remains false in light of the edited original statement
 - update the falsity explanation to match the edited statements
+- If there exist several conventions in the literature for interpreting a certain term or variable, and the paper uses one of these conventions, you must clarify which convention is used in the question by rigorously defining the term or variable as it is defined in the paper.
 
 All variables, notation, and quantities used in the question must be explicitly defined within the question itself. Concepts defined in the abstract and used in the problem statement, should also be defined in the problem and perturbed statement. It is important that everything is defined rigorously, especially for non-standard concepts, to avoid any doubt about what the problem statement asks for.
 

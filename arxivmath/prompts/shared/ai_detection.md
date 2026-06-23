@@ -6,6 +6,8 @@ However, many paper on ArXiv are now generated with the aid of LLMs. This gives 
 ## Instructions
 Discard any paper that mentions the use of LLMs or AI tools in the paper generation process, in any way. It does not matter how large the acknowledgment of AI is, or whether it is in the main text, acknowledgments, or references. If there is any indication that AI was used in any part of the paper, discard the paper. Take the use of AI liberally: look for any mention of AI tools, include Claude, Anthopric, OpenAI, ChatGPT, LLaMA, Gemini, etc. If there is any mention of these tools in the paper, discard the paper.
 
+Additionally, discard a paper if **all** authors explicitly identify themselves as independent researchers without any institutional affiliation.
+
 ## Output format
 Return JSON with keys:
 - "action": "discard" | "keep"

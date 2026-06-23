@@ -4,6 +4,7 @@ max_tokens: 256000
 temperature: 1.0 
 concurrent_requests: 32
 read_cost: 0.95
+top_p: 0.95
 cache_read_cost: 0.16
 write_cost: 4
 context_limit: 256000

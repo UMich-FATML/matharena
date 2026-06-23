@@ -3,6 +3,11 @@ from .base_solver import BaseSolver
 from .base_agent import BaseAgent
 from .pure_model_solver import PureModelSolver
 from .aristotle_solver import AristotleSolver
+from .codex_cli_solver import CodexCLISolver
 from .selfcheck_agent import SelfcheckAgent
+from .math_agent import MathAgent
+from .math_static_agent import StaticMathAgent
 from .deepseek_math import DeepSeekMathAgent
+from .rsa_agent import RSAAgent
+from .nomos_agent import NomosAgent
 from .agent_pool import AgentPool

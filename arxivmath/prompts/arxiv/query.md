@@ -32,7 +32,17 @@ A paper should be **kept** *only if all* of the following conditions are satisfi
    - a pure LaTeX mathematical expression  
 
    The answer **must not contain any English words**, including within LaTeX (symbols and variables are allowed).
-   Additionally, avoid logical expressions and inequalities. Focus on functions, constants, formulas, or specific mathematical objects.
+   Additionally, avoid logical expressions and inequalities. Focus on scalar functions, constants, closed-form formulas, finite sets, ordered tuples, or intervals.
+
+   The answer must be robustly checkable by a simple LaTeX/math parser. Prefer answers like integers, rational numbers, radicals, polynomials, rational functions, elementary expressions, or closed forms using standard functions such as `\sqrt`, `\frac`, `\min`, or `\max`.
+
+   Do **not** keep a paper if the natural answer requires notation-heavy mathematical objects or expressions that are hard to parse mechanically, including:
+   - unevaluated sums or products such as `\sum_{{i=1}}^n a_i` or `\prod_{{p}} f(p)`;
+   - set-builder answers or geometric loci;
+   - answers involving unions/intersections/joins/tensors/coproducts/composition/logic symbols such as `\cup`, `\cap`, `\vee`, `\wedge`, `\otimes`, `\oplus`, `\circ`, or `\neg`;
+   - answers involving named structures or notation classes such as `\mathbb{{Z}}`, `\mathcal{{F}}`, `\operatorname{{rad}}(G)`, `\Sigma^1_2`, `\aleph_0`, or `M_3\otimes M_5`;
+
+   If the abstract only supports this kind of answer, reject the paper. If possible, instead reformulate the question so the answer is a scalar closed-form expression that avoids the unsupported notation. For instance, you can ask the value of the sum of the first \(n\) terms, or the value of the product, or the value of the minimum/maximum, rather than asking for the full unevaluated sum/product/set-builder answer.
 
 6. **Question type restriction**  
    The question must **not** be:

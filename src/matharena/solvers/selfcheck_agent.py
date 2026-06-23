@@ -6,7 +6,7 @@ from loguru import logger
 
 from matharena.api_client import APIClient
 from matharena.solvers import BaseAgent, SolverResponse
-from matharena.utils import get_substring
+from matharena.utils import get_substring, normalize_conversation
 
 
 class SelfcheckAgent(BaseAgent):
@@ -29,11 +29,13 @@ class SelfcheckAgent(BaseAgent):
         self.error_count = self.scaffold_config.get("error_count", 10)
         self.max_iterations = self.scaffold_config.get("max_iterations", 30)
         self.return_if_not_found = self.scaffold_config.get("return_if_not_found", False)
+        self.skip_self_improvement = self.scaffold_config.get("skip_self_improvement", False)
         self.prompts = self.scaffold_config.get("prompts", {})
-        expected_prompts = ["system", "self_improvement", "correction", "verification_system", "verification_reminder"]
+        expected_prompts = ["self_improvement", "correction", "verification_system", "verification_reminder"]
         assert all(
             p in self.prompts.keys() for p in expected_prompts
         ), f"SelfcheckAgent expects prompts: {expected_prompts}, got {list(self.prompts.keys())}"
+        self.system_prompt = self.prompts.get("system", "")
 
         stringify_params = str(self.model_config) + str(self.scaffold_config)
         parameter_hash = md5(stringify_params.encode("utf-8")).hexdigest()[:8]
@@ -94,15 +96,16 @@ class SelfcheckAgent(BaseAgent):
                 error_count += 1
 
                 # Establish a new prompt that contains the solution and the bug report
-                convo = [
-                    {"role": "developer", "content": self.prompts["system"]},
+                convo = []
+                if self.system_prompt:
+                    convo.append({"role": "developer", "content": self.system_prompt})
+                convo.extend([
                     {"role": "user", "content": stmt},
                     {"role": "assistant", "content": solution},
                     {"role": "user", "content": f"{self.prompts["correction"]}\n\n{bug_report}"},
-                ]
-                convo = self._query(self.client, convo)
+                ])
+                convo = normalize_conversation(self._query(self.client, convo))
                 solution = convo[-1]["content"]
-                solution = get_substring(solution, ["</think>", "</summary>"], mode="after")
                 self._add_history(f"correct-it={it}", timestep, convo)
                 timestep += 1
 
@@ -122,21 +125,21 @@ class SelfcheckAgent(BaseAgent):
         logger.debug(f"[{self.bi}] Generating initial solution.")
 
         # Ask for solution
-        convo = [
-            {"role": "developer", "content": self.prompts["system"]},
-            {"role": "user", "content": stmt},
-        ]
-        convo = self._query(self.client, convo)
+        convo = []
+        if self.system_prompt:
+            convo.append({"role": "developer", "content": self.system_prompt})
+        convo.append({"role": "user", "content": stmt})
+        convo = normalize_conversation(self._query(self.client, convo))
 
         # Self improve
-        logger.debug(f"[{self.bi}] Self improving initial solution.")
-        convo.append({"role": "user", "content": self.prompts["self_improvement"]})
-        convo = self._query(self.client, convo)
+        if not self.skip_self_improvement:
+            logger.debug(f"[{self.bi}] Self improving initial solution.")
+            convo.append({"role": "user", "content": self.prompts["self_improvement"]})
+            convo = normalize_conversation(self._query(self.client, convo))
 
         # Record step to history and return solution
         self._add_history(step, timestep, convo)
         solution = convo[-1]["content"]
-        solution = get_substring(solution, ["</think>", "</summary>"], mode="after")
         return timestep + 1, solution
 
     def verify_solution(self, step, timestep, stmt, solution):
@@ -159,18 +162,17 @@ class SelfcheckAgent(BaseAgent):
             {"role": "developer", "content": self.prompts["verification_system"]},
             {"role": "user", "content": verification_query},
         ]
-        convo = self._query(self.client, convo)
+        convo = normalize_conversation(self._query(self.client, convo))
         verdict = convo[-1]["content"]
         self._add_history(f"{step}-ver", timestep, convo)
         timestep += 1
 
         # Ask LLM to classify the verdict: was the solution good or do we need a bug report
         is_correct_query = f"""
-            Response in "yes" or "no". Is the following statement saying the solution is correct, or does not contain critical error or a major justification gap?\n\n{verdict}
+            Response in "yes" or "no". Is the following statement saying the solution is correct (yes), or does not contain critical error or a major justification gap (no)?\n\n{verdict}
         """
-        convo = self._query(self.client, [{"role": "user", "content": is_correct_query}])
+        convo = normalize_conversation(self._query(self.client, [{"role": "user", "content": is_correct_query}]))
         is_correct = convo[-1]["content"]
-        is_correct = get_substring(is_correct, ["</think>", "</summary>"], mode="after")
         self._add_history(f"{step}-cor", timestep, convo)
         timestep += 1
 

@@ -1,5 +1,5 @@
 competition: euler
-dataset_path: data/euler/euler
+dataset_path: MathArena/project_euler
 date:
   '943': '2025-05-04'
   '944': '2025-05-11'

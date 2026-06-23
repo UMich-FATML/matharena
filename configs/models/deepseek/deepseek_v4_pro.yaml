@@ -1,0 +1,18 @@
+model: deepseek-v4-pro
+api: deepseek
+max_tokens: 384000
+temperature: 1
+top_p: 1
+read_cost: 1.74
+cache_read_cost: 0.145
+write_cost: 3.48
+reasoning_effort: max
+concurrent_requests: 64
+human_readable_id: DeepSeek-v4-Pro (Max)
+date: "2026-04-24"
+other_params:
+  open: true
+  creator: DeepSeek
+  parameters: 1600
+  active_parameters: 49
+  huggingface_id: deepseek-ai/DeepSeek-V4-Pro

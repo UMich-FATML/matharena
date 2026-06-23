@@ -14,19 +14,21 @@ from matharena.tools.code_execution import execute_code
 
 
 def load_original_statement(dataset_path, problem_idx):
+    if dataset_path is None:
+        return ""
     path = Path(dataset_path) / "original" / f"{problem_idx}.tex"
     if not path.exists():
         return ""
     return path.read_text(encoding="utf-8")
 
 
-def load_grading_map(dataset_path):
+def load_grading_map(dataset_path, split="train"):
     grading_path = Path(dataset_path) / "grading_scheme.json"
     if os.path.exists(dataset_path) and grading_path.exists():
         with open(grading_path, "r", encoding="utf-8") as f:
             return {int(row["id"]): row for row in json.load(f)}
 
-    rows = load_dataset(dataset_path, split="train").to_list()
+    rows = load_dataset(dataset_path, split=split).to_list()
     grading_map = {}
     for row in rows:
         problem_idx = int(row["problem_idx"])
@@ -38,9 +40,12 @@ def load_grading_map(dataset_path):
             "sample_grading": row.get("sample_grading"),
             "ground_truth_proofs": row.get("ground_truth_proofs", []),
             "ground_truth_solutions": row.get("ground_truth_solutions", []),
+            "original_problem_statement": row.get("original_problem_statement")
+            or row.get("original_problem")
+            or row.get("original_statement")
+            or row.get("original", ""),
         }
     return grading_map
-
 
 def ensure_judgment_shape(run_data, slot):
     n = len(run_data.get("messages", []))
@@ -142,8 +147,9 @@ def main():
     judge_refs = comp_cfg["judge_configs"]
 
     dataset_path = comp_cfg.get("dataset_path")
+    split = comp_cfg.get("split", "train")
 
-    grading_map = load_grading_map(dataset_path)
+    grading_map = load_grading_map(dataset_path, split=split)
 
     output_root = Path(args.output_dir) / args.comp
 
@@ -199,7 +205,11 @@ def main():
                 scheme_text = str(scheme)
 
             proofs = record.get("ground_truth_proofs", [])
-            original_problem_statement = load_original_statement(dataset_path, problem_idx)
+            original_problem_statement = (
+                record.get("original_problem_statement")
+                or load_original_statement(dataset_path, problem_idx)
+                or load_original_statement(Path("data") / args.comp, problem_idx)
+            )
 
             problem_text = run_data.get("problem")
             for run_idx, conversation in enumerate(run_data.get("messages", [])):

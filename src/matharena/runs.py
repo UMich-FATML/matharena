@@ -8,6 +8,7 @@ from loguru import logger
 from matharena.json_zst import OUTPUT_JSON_SUFFIX, dump_json_zst, load_json_zst
 from matharena.utils import (
     convert_answer_to_string,
+    ensure_final_response_message,
     lists_differ,
     is_conversation_broken,
     normalize_conversation,
@@ -297,6 +298,7 @@ class Runs:
 
         # Clean and validate messages and history
         try:
+            solver_response.conversation = ensure_final_response_message(solver_response.conversation)
             clean_conversation = normalize_conversation(solver_response.conversation)
             history = solver_response.history
             self.validate_history(history)

@@ -14,19 +14,6 @@ def query_knowledge(query: str, source: str) -> str:
     fn = sources_to_fn[source]
     return fn(query)
 
-
-def wolfram_query(query: str) -> str:
-    api_key = "72XXK7VUGE"
-    url = "https://www.wolframalpha.com/api/v1/llm-api"
-    params = {"input": query, "appid": api_key}
-    response = requests.get(url, params=params)
-    if response.status_code != 200:
-        logger.warning(f"Wolfram Alpha query failed with status code {response.status_code}")
-        return "Error querying Wolfram Alpha."
-    result = response.text
-    return result
-
-
 def oeis_query(query: str) -> str:
     url = f"https://oeis.org/search?q={query}&fmt=json"
     response = requests.get(url)
@@ -104,4 +91,4 @@ def wikipedia_query(query: str) -> str:
     return result
 
 
-sources_to_fn = {"oeis": oeis_query, "wikipedia": wikipedia_query, "wolfram": wolfram_query}
+sources_to_fn = {"oeis": oeis_query, "wikipedia": wikipedia_query}

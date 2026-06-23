@@ -1,0 +1,18 @@
+model: step-3.7-flash
+api: stepfun
+max_tokens: 250000
+read_cost: 0.1
+write_cost: 0.3
+human_readable_id: Step 3.7 Flash
+batch_processing: false
+use_openai_responses_api: false
+date: "2026-05-29"
+concurrent_requests: 32
+reasoning_effort: high
+stream_openai_chat_completions: true
+other_params:
+  open: true
+  creator: StepFun
+  parameters: 198
+  active_parameters: 11
+  huggingface_id: stepfun-ai/Step-3.7-Flash

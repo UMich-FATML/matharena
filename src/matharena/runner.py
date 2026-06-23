@@ -14,11 +14,12 @@ from matharena.grader import extract_and_grade
 from matharena.parser import extract_answer
 from matharena.request_logger import request_logger
 from matharena.runs import Runs
-from matharena.solvers import AgentPool, AristotleSolver, PureModelSolver
-from matharena.tools.code_execution import execute_code
+from matharena.solvers import AgentPool, AristotleSolver, CodexCLISolver, PureModelSolver
+from matharena.tools.code_execution import execute_code, execute_python_code
 from matharena.tools.lean_execution import add_to_file, lean_explore_search, loogle, verify_lean, verify_lean_with_formal_statement
 from matharena.tools.paper_search import read_paper, query_semantic_scholar, read_pages, find_in_paper
-from matharena.utils import normalize_conversation, save_run_for_recovery
+from matharena.tools.take_a_break import take_a_break
+from matharena.utils import ensure_final_response_message, normalize_conversation, save_run_for_recovery
 
 
 class Runner:
@@ -38,6 +39,8 @@ class Runner:
         with open(competition_config_path, "r") as f:
             self.competition_config = yaml.safe_load(f)
         self.is_fa_comp = self.competition_config.get("final_answer", True)
+        self.is_lean_comp = self.competition_config.get("lean", False)
+        self.is_auto_graded_comp = self.is_fa_comp or self.is_lean_comp
         self.options = self.competition_config.get("options", None)
 
         # Load problems
@@ -54,8 +57,33 @@ class Runner:
         dataset_path = self.competition_config["dataset_path"]
 
         if not os.path.exists(dataset_path):
-            problems = load_dataset(dataset_path, split="train").to_list()
-            for problem in problems:
+            problem_column = self.competition_config.get("problem_column")
+            answer_column = self.competition_config.get("answer_column")
+            has_answer_value = "answer_value" in self.competition_config
+            if answer_column and has_answer_value:
+                raise ValueError("Competition config cannot set both answer_column and answer_value.")
+            problems = load_dataset(dataset_path, split=self.competition_config.get("split", "train")).to_list()
+            for idx, problem in enumerate(problems, start=1):
+                if "problem_idx" not in problem:
+                    problem["problem_idx"] = idx
+                if problem_column:
+                    if problem_column not in problem:
+                        raise KeyError(f"Configured problem_column '{problem_column}' is missing from {dataset_path}.")
+                    problem["problem"] = problem[problem_column]
+                elif "problem" not in problem and "question" in problem:
+                    problem["problem"] = problem["question"]
+                if answer_column:
+                    if answer_column not in problem:
+                        raise KeyError(f"Configured answer_column '{answer_column}' is missing from {dataset_path}.")
+                    problem["answer"] = problem[answer_column]
+                elif has_answer_value:
+                    problem["answer"] = self.competition_config["answer_value"]
+                if "statement" not in problem and "problem" in problem:
+                    problem["statement"] = problem["problem"]
+                if "image" not in problem:
+                    problem["image"] = None
+                if "source" not in problem and problem.get("paper_id"):
+                    problem["source"] = problem["paper_id"]
                 if "image" in problem and problem["image"] is not None:
                     image_b64 = base64.b64encode(problem["image"]["bytes"]).decode("utf-8")
                     problem["image"] = image_b64
@@ -63,7 +91,6 @@ class Runner:
                 problems = [p for p in problems if str(p["problem_idx"]) in [str(pid) for pid in problem_ids]]
             return sorted(problems, key=lambda x: x["problem_idx"])
 
-        is_lean_comp = self.competition_config.get("lean", False)
         answers_csv_path = os.path.join(dataset_path, "answers.csv")
         grading_scheme_path = os.path.join(dataset_path, "grading_scheme.json")
         source_path = os.path.join(dataset_path, "source.csv")
@@ -80,7 +107,7 @@ class Runner:
                         problem_types[problem_id].replace('"', "").replace("[", "").replace("]", "").split(",")
                     )
 
-        if is_lean_comp:
+        if self.is_lean_comp:
             with open(source_path, "r") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
@@ -211,6 +238,17 @@ class Runner:
                 "model_config": model_config,
                 "scaffold_config": scaffold_config,
             }
+        elif solver_type == "codex_cli":
+            model_config = solver_config
+            solver_config = {
+                "human_readable_id": model_config["human_readable_id"],
+                "type": "codex_cli",
+                "model_config": model_config,
+                "scaffold_config": None,
+            }
+            solver_config["model_config"].pop("human_readable_id")
+            if "other_params" in solver_config["model_config"]:
+                solver_config["model_config"].pop("other_params")
 
         return solver_config
 
@@ -227,6 +265,7 @@ class Runner:
         lean_version = model_config.get("lean_environment_override", self.competition_config.get("lean_environment", None))
         POSSIBLE_TOOL_FUNCTIONS = {
             "execute_code": execute_code,
+            "execute_python_code": execute_python_code,
             "verify_lean": lambda code, messages=None: verify_lean(code, lean_version, messages=messages),
             "verify_submission": lambda code, formal_statement, messages=None: verify_lean_with_formal_statement(code, formal_statement, lean_version, messages=messages),
             "add_to_file": lambda code, messages=None: add_to_file(code, lean_version, messages=messages),
@@ -236,12 +275,13 @@ class Runner:
             "query_semantic_scholar": query_semantic_scholar,
             "read_pages": read_pages,
             "find_in_paper": find_in_paper,
+            "take_a_break": take_a_break,
         }
         tools = []
         for tool_desc in tool_descriptions:
             if model_config.get("use_openai_responses_api_tools", model_config.get("use_openai_responses_api", False)) and "tool_spec_openai_responses_api" in tool_desc:
                 tools.append((None, tool_desc["tool_spec_openai_responses_api"]))
-            elif model_config.get("use_gdm_tools", False):
+            elif model_config.get("use_gdm_tools", False) and "tool_spec_gdm" in tool_desc:
                 name = tool_desc["tool_spec_gdm"]["name"]
                 tools.append((None, {name: {}}))
             else:
@@ -291,6 +331,8 @@ class Runner:
             return PureModelSolver(solver_config, default_prompt_template, default_api_client_args, last_chance_prompt)
         elif solver_config["type"] == "agent":
             return AgentPool(solver_config, default_prompt_template, default_api_client_args, last_chance_prompt)
+        elif solver_config["type"] == "codex_cli":
+            return CodexCLISolver(solver_config, default_prompt_template, default_api_client_args, last_chance_prompt)
         else:
             raise ValueError(f"Unknown solver type: {solver_config['type']}")
 
@@ -335,6 +377,9 @@ class Runner:
         if "custom_instructions" in solver_config["model_config"]:
             del solver_config["model_config"]["custom_instructions"]
         default_api_client_args = self._prepare_default_api_client_args(solver_config["model_config"])
+        if solver_config["type"] == "codex_cli":
+            default_api_client_args["competition"] = self.comp_name
+            default_api_client_args["solver_name"] = solver_name
         last_chance_prompt = self._build_last_chance_prompt(self.options)
         solver = self._initialize_solver(
             solver_config, default_prompt_template, default_api_client_args, last_chance_prompt
@@ -346,10 +391,9 @@ class Runner:
         batch = []  # list of (problem payload, image) pairs
         batch_idx_to_problem_idx = {}  # index in batch -> problem_idx
         batch_idx_to_run_idx = {}  # index in batch -> run_idx
-        is_auto_graded_comp = self.is_fa_comp or self.competition_config.get("lean", False)
         for problem in self.problems:
             # Initialize or load problem runs for this problem
-            runs = Runs(self.comp_name, is_auto_graded_comp, solver_name, solver_config["type"], problem, output_dir)
+            runs = Runs(self.comp_name, self.is_auto_graded_comp, solver_name, solver_config["type"], problem, output_dir)
             if self.redo_all:
                 logger.info(f"Not skipping existing runs for problem {problem["problem_idx"]} (will overwrite)")
             else:
@@ -437,12 +481,19 @@ class Runner:
                             "No valid answer found, reprompting the model to report the final answer (last chance)."
                         )
                         solver_response = solver.last_chance(solver_response)
+                        patched_conversation = ensure_final_response_message(solver_response.conversation)
+                        if len(patched_conversation) != len(solver_response.conversation):
+                            logger.info(
+                                f"[{debug_info}] Reprompt returned no final response, appending an empty assistant response."
+                            )
+                            solver_response.conversation = patched_conversation
+                        output_tokens = solver_response.detailed_cost.get("output_tokens", 0)
                         logger.info("Done reprompting")
 
                 logger.info(f"[{debug_info}] Extracting and grading the answer...")
                 # Extract answer from the run and grade
                 problem = next(p for p in self.problems if p["problem_idx"] == problem_idx)
-                if not self.is_fa_comp and not self.competition_config.get("lean", False):
+                if not self.is_auto_graded_comp:
                     grader_response = (None, "TODO Grading", 0)  # answer, is_correct, warnings
                 else:
                     try:
@@ -480,7 +531,7 @@ class Runner:
 
                 # Is this problem done?
                 if problem_runs.N == self.runs_per_problem:
-                    score = sum(problem_runs.correct) if (self.is_fa_comp or self.competition_config.get("lean", False)) else problem_runs.N
+                    score = sum(problem_runs.correct) if self.is_auto_graded_comp else problem_runs.N
                     if not self.competition_config.get("lean", False):
                         logger.info(
                             f"Problem {str(problem_idx)} is done. {problem_runs.N} runs completed. Gold answer: {problem_runs.gold_answer}."

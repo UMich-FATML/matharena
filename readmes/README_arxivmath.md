@@ -14,7 +14,7 @@
 
 ## Overview
 
-This README covers the ArXivMath and BrokenArXiv curation workflow: downloading a new month of papers, running the automated extraction pipeline, manually reviewing candidate questions, exporting the accepted questions, and then evaluating models on the resulting competitions.
+This README covers the ArXivMath, BrokenArXiv, and ArXivLean curation workflow: downloading a new month of papers, running the automated extraction pipeline, manually reviewing candidate questions, exporting the accepted questions, and then evaluating models on the resulting competitions.
 
 ## Prerequisites
 
@@ -23,17 +23,25 @@ Before running the extraction pipeline, remove or archive any old `arxivmath/pap
 The automated pipeline uses DeepSeek-OCR. Start that server in a separate terminal before running `arxivmath/create.sh` or `arxivmath/create_false.sh`:
 
 ```bash
-vllm serve zai-org/GLM-OCR \
+uv run vllm serve zai-org/GLM-OCR \
   --port 8000 \
   --data-parallel-size 2 \
   --dtype half \
   --gpu-memory-utilization 0.85 \
   --max-model-len 8192 \
   --max-num-seqs 8 \
-  --max-num-batched-tokens 12288
+  --max-num-batched-tokens 8192 \
+  --enable-chunked-prefill \
+  --async-scheduling \
+  --performance-mode throughput \
+  --optimization-level 3 \
+  --renderer-num-workers 4 \
+  --mm-processor-cache-gb 0 \
+  --disable-uvicorn-access-log \
+  --uvicorn-log-level warning
 ```
 
-Adjust those `vllm serve` parameters to match your hardware.
+This is tuned for the local 2x RTX 2080 Ti box with vLLM 0.19.x. The OCR client is configured for 16 concurrent page requests, so `--data-parallel-size 2` gives each GPU up to 8 active pages. Full-text review batches selected PDFs through `ocr_batch`, which keeps the server fed across paper boundaries instead of OCRing one paper at a time. The multimodal processor cache is disabled because vLLM 0.19 does not allow that cache with multiple renderer workers, and OCR pages are normally unique. If startup OOMs, first lower `--max-num-batched-tokens` back to `12288`; if the server is stable but `vllm:num_requests_waiting` stays above 0 for long periods, lower `configs/models/glm/ocr.yaml` `concurrent_requests`. For an additional throughput experiment, try adding `--enable-dbo` after the baseline is stable.
 
 ## Adding a New Month
 
@@ -45,7 +53,7 @@ bash arxivmath/scripts/create.sh
 bash arxivmath/scripts/create_false.sh # For BrokenArXiv.
 ```
 
-The helper scripts currently run the full extraction stack with the model configs hardcoded in `arxivmath/create.sh` and `arxivmath/create_false.sh`. If you want a different model, edit those scripts or run the underlying commands manually.
+The helper scripts currently run the full extraction stack with the model configs hardcoded in `arxivmath/scripts/create.sh`, and `arxivmath/scripts/create_false.sh`. If you want a different model, edit those scripts or run the underlying commands manually.
 
 ## Manual Review
 
@@ -70,8 +78,8 @@ I usually remove around 50% of questions in the manual pass.
 Once the review is done, export the accepted questions:
 
 ```bash
-uv run python arxivmath/export_accepted_questions.py --out-dir data/arxiv/february
-uv run python arxivmath/export_false_proofs.py --out-dir data/arxiv_false/february # For BrokenArXiv.
+uv run python arxivmath/scripts/arxiv/export_accepted_questions.py --out-dir data/arxiv/february
+uv run python arxivmath/scripts/broken/export_false_proofs.py --out-dir data/arxiv_false/february # For BrokenArXiv.
 ```
 
 Then copy the previous month's competition config and update it for the new month:

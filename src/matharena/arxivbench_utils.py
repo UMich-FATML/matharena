@@ -1,18 +1,29 @@
 import json
+import logging
 import os
-
-import yaml
-import requests
-from loguru import logger
-
-from matharena.tools.paper_search import ocr_paper, STORE_FOLDER
 
 
 def load_metadata(paper_root, paper_id):
     path = os.path.join(paper_root, paper_id, "metadata.json")
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
-    
+
+
+def _logger():
+    try:
+        from loguru import logger
+
+        return logger
+    except ImportError:
+        return logging.getLogger(__name__)
+
+
+def _paper_search_dependencies():
+    from matharena.tools.paper_search import STORE_FOLDER, ocr_batch, ocr_paper
+
+    return STORE_FOLDER, ocr_batch, ocr_paper
+
+
 def resolve_model_config_path(model_arg, config_root="configs/models"):
     if model_arg.endswith(".yaml"):
         candidate = model_arg
@@ -27,6 +38,8 @@ def resolve_model_config_path(model_arg, config_root="configs/models"):
 
 
 def load_model_config(path):
+    import yaml
+
     with open(path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
     if not isinstance(config, dict) or "model" not in config:
@@ -69,6 +82,9 @@ def save_annotation(paper_root, paper_id, data, annotation_filename="llm_annotat
 
 
 def download_pdf(paper_id):
+    import requests
+
+    STORE_FOLDER, _, _ = _paper_search_dependencies()
     os.makedirs(STORE_FOLDER, exist_ok=True)
     pdf_path = os.path.join(STORE_FOLDER, f"{paper_id}.pdf")
     url = f"https://arxiv.org/pdf/{paper_id}.pdf"
@@ -80,6 +96,7 @@ def download_pdf(paper_id):
 
 
 def ensure_ocr(paper_id, redo=False):
+    STORE_FOLDER, _, ocr_paper = _paper_search_dependencies()
     pdf_path = os.path.join(STORE_FOLDER, f"{paper_id}.pdf")
     md_path = os.path.join(STORE_FOLDER, f"{paper_id}.md")
     if redo or not os.path.exists(pdf_path):
@@ -88,6 +105,39 @@ def ensure_ocr(paper_id, redo=False):
         ocr_paper(paper_id)
     with open(md_path, "r", encoding="utf-8") as f:
         return f.read()
+
+
+def ensure_ocr_batch(paper_ids, redo=False):
+    import requests
+
+    STORE_FOLDER, ocr_batch, _ = _paper_search_dependencies()
+    paper_ids = list(dict.fromkeys(paper_ids))
+    pending_ocr = []
+    for paper_id in paper_ids:
+        pdf_path = os.path.join(STORE_FOLDER, f"{paper_id}.pdf")
+        md_path = os.path.join(STORE_FOLDER, f"{paper_id}.md")
+        if redo or not os.path.exists(pdf_path):
+            try:
+                download_pdf(paper_id)
+            except requests.exceptions.HTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 404:
+                    _logger().warning(f"PDF not found for {paper_id}; skipping OCR.")
+                    continue
+                raise
+        if redo or not os.path.exists(md_path):
+            pending_ocr.append((pdf_path, paper_id))
+
+    if pending_ocr:
+        ocr_batch(pending_ocr)
+
+    full_texts = {}
+    for paper_id in paper_ids:
+        md_path = os.path.join(STORE_FOLDER, f"{paper_id}.md")
+        if not os.path.exists(md_path):
+            continue
+        with open(md_path, "r", encoding="utf-8") as f:
+            full_texts[paper_id] = f.read()
+    return full_texts
 
 
 def _decode_json_escapes(value):
@@ -261,7 +311,7 @@ def extract_json(text):
             if parsed is not None:
                 return parsed
     if "json" in text.lower():
-        logger.warning(f"Failed to extract JSON from text that mentions JSON. {text}")
+        _logger().warning(f"Failed to extract JSON from text that mentions JSON. {text}")
     return None
 
 def get_latest_fields(annotation, fields):

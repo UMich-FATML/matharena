@@ -8,8 +8,6 @@ import math
 
 import yaml
 from flask import Flask, redirect, render_template, url_for, send_from_directory, request, abort, jsonify
-from pyparsing import srange
-from torch import ScriptDict
 
 from matharena.configs import extract_existing_configs
 from matharena.json_zst import OUTPUT_JSON_SUFFIX, dump_json_zst, load_json_zst

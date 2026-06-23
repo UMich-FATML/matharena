@@ -28,7 +28,14 @@ def default_verification_key(semantic_judge=False):
     return "semantic_verification" if semantic_judge else "verification"
 
 
-def needs_verification(annotation, overwrite=False, false_mode=False, lean_mode=False, semantic_judge=False, key=None):
+def needs_verification(
+    annotation,
+    overwrite=False,
+    false_mode=False,
+    lean_mode=False,
+    semantic_judge=False,
+    key=None,
+):
     if annotation.get("keep") is not True:
         return False
     if semantic_judge:

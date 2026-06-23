@@ -102,11 +102,9 @@ def main():
         answers_writer.writerow(["id", "answer"])
         source_writer.writerow(["id", "source"])
         source_meta_writer.writerow(["id", "title", "authors"])
-        types_writer.writerow(["id", "type"])
         for idx, (paper_id, question, answer, metadata) in enumerate(accepted, start=1):
             write_text(os.path.join(problems_dir, f"{idx}.tex"), question)
             answers_writer.writerow([idx, answer])
-            types_writer.writerow([idx, "[]"])
             title = metadata.get("title") or ""
             authors = metadata.get("authors") or []
             author_names = []

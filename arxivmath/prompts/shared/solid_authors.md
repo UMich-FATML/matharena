@@ -8,12 +8,14 @@ Respond **only** with a JSON object:
 
 ```json
 {{
-  "keep": boolean
+  "keep": boolean,
+  "rationale": "brief justification for the decision"
 }}
 ```
 
 If you could not confirm any author satisfies the criteria, output `"keep": false`.
 Otherwise, output `"keep": true`.
+Always include a concise rationale. For `"keep": true`, name the author and the evidence that they have a solid publication record or appropriate academic standing in the relevant field. For `"keep": false`, briefly state what you checked and why it was insufficient.
 
 ---
 

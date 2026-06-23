@@ -1,0 +1,21 @@
+model: glm-5.2
+api: bigmodel
+max_tokens: 131072
+concurrent_requests: 10
+temperature: 1.0
+top_p: 0.95
+reasoning_effort: max
+extra_body:
+  thinking:
+    type: enabled
+read_cost: 1.2
+write_cost: 4.1
+human_readable_id: GLM 5.2
+date: "2026-06-17"
+other_params:
+  open: true
+  creator: Z.ai
+  parameters: 753
+  active_parameters: 40
+  huggingface_id: zai-org/GLM-5.2
+stream_openai_chat_completions: true

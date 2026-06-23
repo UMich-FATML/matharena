@@ -6,6 +6,9 @@ lean_environment_override: lean-4.28.0
 aristotle_toolchain: leanprover/lean4:v4.28.0
 aristotle_mathlib_revision: v4.28.0
 human_readable_id: Aristotle
+other_params:
+  open: false
+  creator: Harmonic
 custom_instructions:
   arxivlean/march: |
     Solve the Lean theorem in `Problem.lean`.

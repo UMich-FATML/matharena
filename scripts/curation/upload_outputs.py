@@ -10,6 +10,12 @@ import shutil
 from matharena.json_zst import OUTPUT_JSON_SUFFIX, load_json_zst
 
 
+def normalize_optional_string_column(df, column):
+    if column not in df.columns:
+        return
+    df[column] = df[column].map(lambda value: None if pd.isna(value) else str(value))
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Upload dataset to Hugging Face Hub")
@@ -130,6 +136,7 @@ if __name__ == "__main__":
     for col in df.columns:
         if df[col].dtype == "object" and df[col].map(lambda x: isinstance(x, (list, dict))).any():
             df[col] = df[col].map(lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, (list, dict)) else x)
+    normalize_optional_string_column(df, "source")
     
     if not args.visual_dataset:
         

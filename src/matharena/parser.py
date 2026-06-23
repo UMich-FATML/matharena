@@ -16,6 +16,20 @@ from sympy.parsing.latex import parse_latex
 from matharena.parse_manual import complete_mapper, manual_mapper
 
 
+APPROX_RE = re.compile(r"\\approx|≈|approximately|approx\.?|about", re.I)
+EXACT_BOX_TOKENS = (r"\frac", r"\sqrt", r"\binom", "/", "^")
+SYMPY_LOCALS = {
+    "binomial": sympy.binomial,
+    "floor": sympy.floor,
+    "ceiling": sympy.ceiling,
+    "ceil": sympy.ceiling,
+    "pi": sympy.pi,
+    "E": sympy.E,
+    "e": sympy.E,
+    "I": sympy.I,
+}
+
+
 @total_ordering
 class WarningType(Enum):
     """An enumeration for warning levels."""
@@ -85,10 +99,28 @@ def find_last_boxed_content(text: str, list_answer: bool = False) -> Optional[st
         for i in range(len(split_text) - 1, -1, -1):
             matches_line = list(regex.finditer(pattern, split_text[i]))
             if len(matches_line) > 0:
-                returned_boxed = ",".join([match.group(2) for match in matches_line])
+                # If a full list answer is boxed repeatedly on the final line,
+                # joining all boxes duplicates it. Multiple scalar boxes are
+                # still joined, e.g. \boxed{2}, \boxed{3}.
+                if any("," in match.group(2) for match in matches_line):
+                    returned_boxed = matches_line[-1].group(2)
+                else:
+                    returned_boxed = ",".join([match.group(2) for match in matches_line])
                 return remove_inner_boxed(returned_boxed), WarningType.POSSIBLE
 
-    last_match = remove_inner_boxed(matches[-1].group(2))
+    selected_match = matches[-1]
+    if len(matches) > 1 and should_prefer_previous_boxed_over_approximation(selected_match.group(2)):
+        for match in reversed(matches[:-1]):
+            if not contains_approximation(match.group(2)):
+                selected_match = match
+                break
+    if len(matches) > 1 and is_decimal_approximation_box(selected_match.group(2)):
+        for match in reversed(matches[:-1]):
+            if looks_like_exact_boxed_expression(match.group(2)):
+                selected_match = match
+                break
+
+    last_match = remove_inner_boxed(selected_match.group(2))
     return last_match, WarningType.NONE
 
 
@@ -159,7 +191,131 @@ def replace_and_or(s: str) -> str:
     return "".join(out)
 
 
-def extract_boxed_answer_parse(text: str, parse: bool = True, list_answer: bool = False) -> Optional[int]:
+def contains_approximation(s: str) -> bool:
+    """Returns whether a boxed answer looks like a trailing approximation."""
+    return APPROX_RE.search(s) is not None
+
+
+def should_prefer_previous_boxed_over_approximation(s: str) -> bool:
+    if not contains_approximation(s):
+        return False
+
+    prefix = APPROX_RE.split(s, maxsplit=1)[0].strip()
+    if not prefix:
+        return True
+    if "=" in prefix or any(token in prefix for token in EXACT_BOX_TOKENS):
+        return False
+    return re.fullmatch(r"[\s$(){}\[\].,0-9+\-]+", prefix) is not None
+
+
+def is_decimal_approximation_box(s: str) -> bool:
+    """Returns whether a boxed value is only a decimal approximation."""
+    s = s.replace(r"\displaystyle", "")
+    s = s.replace("$", "").replace(",", "").strip()
+    s = re.sub(r"\\[,;:! ]", "", s)
+    s = re.sub(r"\s+", "", s)
+    return re.fullmatch(r"[-+]?\d+\.\d+(?:\.\.\.)?", s) is not None
+
+
+def looks_like_exact_boxed_expression(s: str) -> bool:
+    """Returns whether a boxed expression is a plausible exact answer."""
+    if contains_approximation(s) or is_decimal_approximation_box(s):
+        return False
+    return any(token in s for token in EXACT_BOX_TOKENS)
+
+
+def split_top_level(s: str, delimiter: str) -> list[str]:
+    """Splits on delimiters that are not inside braces or parentheses."""
+    if delimiter != ",":
+        return s.split(delimiter)
+
+    parts = []
+    start = 0
+    depth = 0
+    openers = "({["
+    closers = ")}]"
+    for i, char in enumerate(s):
+        if char in openers:
+            depth += 1
+        elif char in closers and depth > 0:
+            depth -= 1
+        elif char == delimiter and depth == 0:
+            parts.append(s[start:i])
+            start = i + 1
+    parts.append(s[start:])
+    return parts
+
+
+def expand_pm_list_terms(s: str) -> str:
+    r"""Expands top-level list entries containing \pm into plus and minus entries."""
+    if r"\pm" not in s:
+        return s
+
+    parts = split_top_level(s, ",")
+    if len(parts) == 1:
+        return s
+
+    expanded = []
+    for part in parts:
+        if r"\pm" in part:
+            expanded.append(part.replace(r"\pm", "+"))
+            expanded.append(part.replace(r"\pm", "-"))
+        else:
+            expanded.append(part)
+    return ",".join(expanded)
+
+
+def canonicalize_frac_shorthand(s: str) -> str:
+    """Normalizes common LaTeX fraction and binomial shorthands to braced form."""
+    frac_cmd = r"(\\(?:dfrac|tfrac|frac))"
+    atom = r"(\\[a-zA-Z]+|[A-Za-z0-9])"
+    s = regex.sub(frac_cmd + r"\{((?:[^{}]|\{(?2)\})*)\}\s*" + atom, r"\1{\2}{\3}", s)
+    s = re.sub(frac_cmd + r"\s*" + atom + r"\s*" + atom, r"\1{\2}{\3}", s)
+    s = re.sub(frac_cmd + r"\s*\{([^{}]+)\}\s*" + atom, r"\1{\2}{\3}", s)
+    s = re.sub(frac_cmd + r"\s*" + atom + r"\s*\{", r"\1{\2}{", s)
+    s = re.sub(r"(\\binom)\s*" + atom + r"\s*" + atom, r"\1{\2}{\3}", s)
+    return s
+
+
+def strip_trailing_qualifiers(s: str) -> str:
+    """Removes conditions/units/approximations appended after the answer."""
+    for marker in [r"\qquad", r"\quad"]:
+        idx = s.find(marker)
+        if idx == -1:
+            continue
+        tail = s[idx + len(marker) :].lower()
+        if any(
+            token in tail
+            for token in [
+                r"\text",
+                r"\ge",
+                r"\le",
+                r"\to",
+                ">=",
+                "<=",
+                "approximately",
+                "approx",
+                "about",
+                "where",
+                " for ",
+                " as ",
+                " if ",
+                " when ",
+            ]
+        ):
+            return s[:idx]
+
+    return re.sub(
+        r"\s*\((?:[^()]*(?:\\ge|\\le|\\to|>=|<=|>|<|where|for|as|if|when)[^()]*)\)\s*$",
+        "",
+        s,
+        flags=re.I,
+    )
+
+
+def extract_boxed_answer_parse(
+    text: str, parse: bool = True, list_answer: bool = False, typed_delimiters: bool = True
+) -> Optional[int]:
     """Extracts and parses the content of the last `\boxed` or `\fbox` command.
 
     Args:
@@ -179,7 +335,9 @@ def extract_boxed_answer_parse(text: str, parse: bool = True, list_answer: bool 
         except:  # noqa: E722
             # logger.info(f"Could not parse answer {answer} as integer")
             if parse:
-                parsed_answer, warning = parse_answer(answer, list_answer=list_answer)
+                parsed_answer, warning = parse_answer(
+                    answer, list_answer=list_answer, typed_delimiters=typed_delimiters
+                )
                 return parsed_answer, warning
             return answer, warning
     return None, WarningType.MAJOR
@@ -205,7 +363,9 @@ def extract_last_integer(text: str) -> Optional[int]:
         return None, WarningType.MAJOR
 
 
-def extract_answer(text: str, strict_parsing: bool = True, parse: bool = True, list_answer: bool = False):
+def extract_answer(
+    text: str, strict_parsing: bool = True, parse: bool = True, list_answer: bool = False, typed_delimiters: bool = True
+):
     """Extracts and parses the final answer from a string.
 
     Args:
@@ -225,7 +385,7 @@ def extract_answer(text: str, strict_parsing: bool = True, parse: bool = True, l
         warning_old = WarningType.MAJOR
     text, warning = replace_unicode(text)
     warning = max(warning, warning_old)
-    answer, warning_new = extract_boxed_answer_parse(text, parse, list_answer)
+    answer, warning_new = extract_boxed_answer_parse(text, parse, list_answer, typed_delimiters=typed_delimiters)
     if isinstance(answer, AnswerList) and len(answer.answers) == 1:
         answer = answer.answers[0]
     warning = max(warning, warning_new)
@@ -234,7 +394,7 @@ def extract_answer(text: str, strict_parsing: bool = True, parse: bool = True, l
 
     return extract_last_integer(text)
 
-def parse_answer(s: str, primitive_type: type = None, list_answer: bool = False):
+def parse_answer(s: str, primitive_type: type = None, list_answer: bool = False, typed_delimiters: bool = True):
     """Parses a string into a mathematical expression.
 
     Args:
@@ -250,6 +410,10 @@ def parse_answer(s: str, primitive_type: type = None, list_answer: bool = False)
         logger.warning(f"Applying manual parsing to {s}")
         s = manual_mapper[s]
         warning = WarningType.MAJOR
+    if typed_delimiters:
+        typed_output = parse_typed_delimited_answer(s, primitive_type=primitive_type)
+        if typed_output is not None:
+            return typed_output
     s = remove_invalid_characters(s)
     s = remove_outer_brackets(normalize_string(s, list_answer))
     # s = insert_implicit_mul(s)
@@ -261,7 +425,7 @@ def parse_answer(s: str, primitive_type: type = None, list_answer: bool = False)
     if len(output) == 1:
         output = output[0]
 
-    if isinstance(output, list) or isinstance(output, tuple):
+    if isinstance(output, (list, tuple)):
         output = AnswerList(output)
     return output, warning
 
@@ -280,6 +444,7 @@ def normalize_string(s, list_answer=False):
     s = s.replace(r"\Bigl", "").replace(r"\Bigr", "")
     s = s.replace(r"\bigl", "").replace(r"\bigr", "")
     s = s.replace(r"\Big", "").replace(r"\big", "").replace(r"\Large", "").replace(r"\large", "")
+    s = canonicalize_frac_shorthand(s)
     s = remove_aligns(s)
     s = s.replace("[", "(")
     s = s.replace("]", ")")
@@ -290,7 +455,6 @@ def normalize_string(s, list_answer=False):
     # remove hline and vline
     s = s.replace(r"\hline", "")
     s = s.replace(r"\vline", "")
-    s = s.replace(r"\quad", " ")
     s = s.replace("−", "-")
     s = s.replace("–", "-")
     s = s.replace("·", " \\cdot ")
@@ -306,10 +470,11 @@ def normalize_string(s, list_answer=False):
 
     if list_answer and s is not None:
         s = replace_and_or(s)
+        s = expand_pm_list_terms(s)
 
     if not list_answer:
-        # replace something of the type integer,integer with integerinteger
-        s = re.sub(r"(?<=\d),(?=\d)", "", s)
+        # remove thousands separators without eating function/list commas like max(1,2s)
+        s = re.sub(r"(?<=\d),(?=\d{3}(?:\D|$))", "", s)
         s = s.replace("{,}", "")
     if list_answer:
         s = s.replace(";", ",")
@@ -323,15 +488,29 @@ def normalize_string(s, list_answer=False):
     s = re.sub(r"\\mathrm\{(.*?)\}", r" \1 ", s)
 
     s = s.replace("F_{30}", "832040")  # Fibonacci number present in one problem
-    if "=" in s:
-        s = s.split("=")[-1]
-    if r"\in" in s and list_answer:
-        s = s.split(r"\in")[-1]
-
     if "\\approx" in s:
         s = s.split("\\approx")[0]
         if s.endswith("("):  # in case it was put in brackets
             s = s[:-1]
+    if "=" in s:
+        if list_answer:
+            parts = split_top_level(s, ",")
+            if len(parts) > 1:
+                s = ",".join(part.split("=")[-1] for part in parts)
+            else:
+                s = s.split("=")[-1]
+        else:
+            s = s.split("=")[-1]
+    s = strip_trailing_qualifiers(s)
+    for relation in [r"\longrightarrow", r"\rightarrow", r"\to", r"\sim"]:
+        if relation in s:
+            s = s.split(relation)[-1]
+    if r"\in" in s and list_answer:
+        s = s.split(r"\in")[-1]
+
+    s = re.sub(r"\s*\+\s*o\s*\([^)]*\)\s*$", "", s)
+    s = re.sub(r"\s*\+\s*O\s*\([^)]*\)\s*$", "", s)
+    s = s.replace(r"\qquad", " ").replace(r"\quad", " ")
     return strip(s)
 
 
@@ -370,6 +549,36 @@ def remove_outer_brackets(s):
     return s
 
 
+def parse_typed_delimited_answer(s: str, primitive_type: type = None):
+    s = remove_invalid_characters(re.sub(r"\\(?:left|right|Bigl|Bigr|bigl|bigr)", "", s))
+    if "=" in s:
+        s = s.split("=")[-1]
+    s = strip(s)
+    if s.startswith(r"\{") and s.endswith(r"\}"):
+        kind, inner, brackets, unordered, accepts_bare_list = "set", s[2:-2], ("{", "}"), True, True
+    elif len(s) >= 2 and s[0] in "([" and s[-1] in ")]":
+        parts = split_top_level(s[1:-1], ",")
+        if len(parts) < 2:
+            return None
+        if (s[0] == "[" or s[-1] == "]") and len(parts) == 2:
+            kind, unordered, accepts_bare_list = "interval", False, False
+        else:
+            kind, unordered, accepts_bare_list = "tuple", False, True
+        inner, brackets = s[1:-1], (s[0], s[-1])
+    else:
+        return None
+
+    parts = split_top_level(inner, ",")
+    parsed_parts, warning = [], WarningType.NONE
+    for part in parts:
+        parsed, new_warning = parse_answer(part, primitive_type=primitive_type)
+        if parsed is None:
+            return None, max(warning, WarningType.MAJOR)
+        parsed_parts.append(parsed)
+        warning = max(warning, new_warning)
+    return DelimitedAnswer(kind, parsed_parts, brackets, unordered, accepts_bare_list), warning
+
+
 def remove_aligns(s: str) -> str:
     """Removes `\\begin{align}` and `\\end{align}` environments from a string.
 
@@ -399,20 +608,29 @@ def replace_unicode(text: str) -> str:
         tuple: A tuple containing the processed string and a warning level.
     """
     text_old = text
-    text = text.replace("\u23a7", r"\boxed{")
-    text = text.replace("\u23ab", r"}")
-    text = text.replace("\n\u2502", r"\boxed{")
-    text = text.replace("\u2502", r"}")
-    text = text.replace("\n\u2503", r"\boxed{")
-    text = text.replace("\u2503", r"}")
-    text = text.replace("\n\uf8f0", r"\boxed{")
-    text = text.replace("\uf8fb", r"}")
+    for old, new in {
+        "\u23a7": r"\boxed{",
+        "\u23ab": r"}",
+        "\n\u2502": r"\boxed{",
+        "\u2502": r"}",
+        "\n\u2503": r"\boxed{",
+        "\u2503": r"}",
+        "\n\uf8f0": r"\boxed{",
+        "\uf8fb": r"}",
+        "<|begin_of_box|>": r"\boxed{",
+        "<|end_of_box|>": r"}",
+    }.items():
+        text = text.replace(old, new)
     warning = WarningType.NONE if text == text_old else WarningType.POSSIBLE
-    text = text.replace("\u221a", r"\sqrt")  # these ones are for sure fine, no warning necessary
-    text = text.replace("\u00d7", r"\cdot")
-    text = text.replace("\u202f", r" ")
-    text = text.replace("\u2212", "-")
-    text = text.replace("\u03c0", r"\pi")
+    for old, new in {
+        "\u221a": r"\sqrt",
+        "\u00d7": r"\cdot",
+        "\u202f": r" ",
+        "\u2212": "-",
+        "\u03c0": r"\pi",
+        "\u00b1": r"\pm",
+    }.items():
+        text = text.replace(old, new)
     return text, warning
 
 
@@ -425,11 +643,7 @@ def remove_invalid_characters(text):
     Returns:
         str: The processed string.
     """
-    text = re.sub(r"\\;", "", text)
-    text = re.sub(r"\\:", "", text)
-    text = re.sub(r"\\,", "", text)
-    text = re.sub(r"\\!", "", text)
-    return text
+    return re.sub(r"\\[;:,!]", "", text)
 
 
 def strip(s: str):
@@ -455,6 +669,69 @@ def split_multiletter_symbols(expr):
             reps[s] = Mul(*[Symbol(ch) for ch in name])
     return expr.xreplace(reps)
 
+
+def _typed_element_equal(left, right):
+    try:
+        if left == right:
+            return True
+    except Exception:
+        pass
+    return check_answers(left, right)
+
+
+def _typed_sequence_equal(left, right, unordered=False):
+    if len(left) != len(right):
+        return False
+    if not unordered:
+        return all(_typed_element_equal(a, b) for a, b in zip(left, right))
+    matched = set()
+    for answer in left:
+        for i, other in enumerate(right):
+            if i not in matched and _typed_element_equal(answer, other):
+                matched.add(i)
+                break
+        else:
+            return False
+    return True
+
+
+class DelimitedAnswer:
+    def __init__(self, kind, answers, brackets, unordered=False, accepts_bare_list=True):
+        self.kind = kind
+        self.answers = list(answers)
+        self.brackets = brackets
+        self.unordered = unordered
+        self.accepts_bare_list = accepts_bare_list
+        if kind == "interval":
+            self.left, self.right = self.answers
+            self.left_closed = brackets[0] == "["
+            self.right_closed = brackets[1] == "]"
+
+    def equals(self, other):
+        if isinstance(other, DelimitedAnswer):
+            if (self.kind, self.brackets) != (other.kind, other.brackets):
+                return False
+            other = other.answers
+        elif self.accepts_bare_list and isinstance(other, AnswerList):
+            other = other.answers
+        elif not (self.accepts_bare_list and isinstance(other, (list, tuple))):
+            return False
+        return _typed_sequence_equal(self.answers, other, unordered=self.unordered)
+
+    def __str__(self):
+        left, right = self.brackets
+        return left + ",".join(str(ans) for ans in self.answers) + right
+
+    def __len__(self):
+        return len(self.answers)
+
+    def __iter__(self):
+        return iter(self.answers)
+
+
+TYPED_DELIMITED_ANSWER_TYPES = (DelimitedAnswer,)
+
+
 def check_answers(ans1, ans2):
     """Checks if two answers are equal.
 
@@ -467,6 +744,10 @@ def check_answers(ans1, ans2):
     """
     if ans1 is None or ans2 is None:
         return False
+    if isinstance(ans2, TYPED_DELIMITED_ANSWER_TYPES):
+        return bool(ans2.equals(ans1))
+    if isinstance(ans1, TYPED_DELIMITED_ANSWER_TYPES):
+        return bool(ans1.equals(ans2))
     if (type(ans1) in [list, AnswerList]) != (type(ans2) in [list, AnswerList]):
         return False
     try:
@@ -502,7 +783,7 @@ class AnswerList:
         Args:
             answers (list[Any]): A list of answers.
         """
-        if not isinstance(answers, list) and not isinstance(answers, tuple):
+        if not isinstance(answers, (list, tuple)):
             raise ValueError(f"Expected passed answers to be list or tuple, received {type(answers)}")
 
         valid_answers = []
@@ -541,7 +822,7 @@ class AnswerList:
         return True
 
     def __str__(self):
-        return "[" + ",".join([str(ans) for ans in self.answers]) + "]"
+        return "[" + ",".join(str(ans) for ans in self.answers) + "]"
 
     def __len__(self):
         return len(self.answers)
@@ -605,6 +886,22 @@ class ParseObject:
 class ParsePrimitive(ParseObject):
     """A class for parsing primitive types."""
 
+    @staticmethod
+    def _rewrite_latex(latex_str, brace_digits=False):
+        if brace_digits:
+            latex_str = re.sub(r"\{(\d+)\}", r"(\1)", latex_str)
+        latex_str = re.sub(r"\\lfloor\s*(.*?)\s*\\rfloor", r"floor(\1)", latex_str)
+        latex_str = re.sub(r"\\lceil\s*(.*?)\s*\\rceil", r"ceiling(\1)", latex_str)
+        latex_str = re.sub(r"\\*(?:dfrac|tfrac|frac)\{([^{}]*)\}\{([^{}]*)\}", r"(\1)/(\2)", latex_str)
+        latex_str = re.sub(r"\\*binom\{([^{}]*)\}\{([^{}]*)\}", r"binomial(\1, \2)", latex_str)
+        latex_str = re.sub(r"\\*sqrt\[(.*?)\]\{(.*?)\}", r"(\2)**(1/(\1))", latex_str)
+        latex_str = re.sub(r"\\*sqrt\((\d+)\)\{([^{}]*)\}", r"(\2)**(1/(\1))", latex_str)
+        latex_str = re.sub(r"\\*sqrt\{(.*?)\}", r"(\1)**(1/2)", latex_str)
+        latex_str = latex_str.replace("^", "**")
+        latex_str = latex_str.replace("\\cdot", "*").replace("\\times", "*")
+        latex_str = latex_str.replace("\\pi", " pi ").replace("\\e", " E ").replace("\\i", " I ")
+        return re.sub(r"\bi\b", "I", latex_str)
+
     @classmethod
     def parse(cls, string, primitive_type):
         """Parses a string into a primitive type.
@@ -617,6 +914,7 @@ class ParsePrimitive(ParseObject):
             tuple: A tuple containing the parsed primitive and a warning level.
         """
         warning = WarningType.NONE
+        string = canonicalize_frac_shorthand(string)
         # Integer
         if string.isdigit():
             if primitive_type == Fraction:
@@ -642,33 +940,13 @@ class ParsePrimitive(ParseObject):
             latex_str = string
             for _ in range(5):
                 init_str = latex_str
-                latex_str = re.sub(r"\\*(?:dfrac|tfrac|frac)\{([^{}]*)\}\{([^{}]*)\}", r"(\1)/(\2)", latex_str)
-                latex_str = re.sub(r"\\*binom\{([^{}]*)\}\{([^{}]*)\}", r"binomial(\1, \2)", latex_str)
-                latex_str = re.sub(r"\\*sqrt\[(.*?)\]\{(.*?)\}", r"(\2)**(1/(\1))", latex_str)
-                latex_str = re.sub(r"\\*sqrt\((\d+)\)\{([^{}]*)\}", r"(\2)**(1/(\1))", latex_str)
-                latex_str = re.sub(r"\\*sqrt\{(.*?)\}", r"(\1)**(1/2)", latex_str)
-
-                latex_str = latex_str.replace("^", "**")
-                latex_str = latex_str.replace("\\cdot", "*").replace("\\times", "*")
-                latex_str = latex_str.replace("\\pi", " pi ").replace("\\e", " E ").replace("\\i", " I ")
-                latex_str = re.sub(r"\bi\b", "I", latex_str)
+                latex_str = cls._rewrite_latex(latex_str)
                 if init_str == latex_str:
                     break
 
             for _ in range(5):
-
                 init_str = latex_str
-                latex_str = re.sub(r"\{(\d+)\}", r"(\1)", latex_str)
-                latex_str = re.sub(r"\\*(?:dfrac|tfrac|frac)\{([^{}]*)\}\{([^{}]*)\}", r"(\1)/(\2)", latex_str)
-                latex_str = re.sub(r"\\*binom\{([^{}]*)\}\{([^{}]*)\}", r"binomial(\1, \2)", latex_str)
-                latex_str = re.sub(r"\\*sqrt\[(.*?)\]\{(.*?)\}", r"(\2)**(1/(\1))", latex_str)
-                latex_str = re.sub(r"\\*sqrt\((\d+)\)\{([^{}]*)\}", r"(\2)**(1/(\1))", latex_str)
-                latex_str = re.sub(r"\\*sqrt\{(.*?)\}", r"(\1)**(1/2)", latex_str)
-
-                latex_str = latex_str.replace("^", "**")
-                latex_str = latex_str.replace("\\cdot", "*").replace("\\times", "*")
-                latex_str = latex_str.replace("\\pi", " pi ").replace("\\e", " E ").replace("\\i", " I ")
-                latex_str = re.sub(r"\bi\b", "I", latex_str)
+                latex_str = cls._rewrite_latex(latex_str, brace_digits=True)
                 if init_str == latex_str:
                     break
 
@@ -677,15 +955,13 @@ class ParsePrimitive(ParseObject):
             latex_str = re.sub(r"\)(\d|(?<![a-zA-Z])[a-zA-Z]{1,2}(?![a-zA-Z]))", r")*\1", latex_str)
             latex_str = re.sub(r"(?<=\d)((?<![a-zA-Z])[a-zA-Z]{1,2}(?![a-zA-Z]))", r"*\1", latex_str)
             latex_str = re.sub(r"((?<![a-zA-Z])[a-zA-Z]{1,2}(?![a-zA-Z]))(?=\d)", r"\1*", latex_str)
+            latex_str = re.sub(r"\)\s*\(", r")*(", latex_str)
             latex_str = re.sub(r"\{([^{}]*)\}", lambda m: "[" + m.group(1).replace(",", ", ") + "]", latex_str)
 
             if latex_str == "None":
                 string = sympy.core.symbol.Symbol("None")
             else:
-                string = sympy.sympify(
-                    latex_str,
-                    locals={"binomial": sympy.binomial, "pi": sympy.pi, "E": sympy.E, "e": sympy.E, "I": sympy.I},
-                )
+                string = sympy.sympify(latex_str, locals=SYMPY_LOCALS)
         except Exception as e:
             try:
                 string_no_eq = string
@@ -808,42 +1084,39 @@ class ParseList(ParseObject):
             string = string[1:-1]
         string = strip(string)
         used_delim = delimiter[0]
+        if not any(len(split_top_level(string, delim)) > 1 for delim in delimiter):
+            parsed, warning = ParsePrimitive.parse(string, primitive_type=primitive_type)
+            return [parsed], warning
         for delim in delimiter:
-            if delim in string:
-                comma_separated = string.split(delim)
+            comma_separated = split_top_level(string, delim)
+            if len(comma_separated) > 1:
                 used_delim = delim
                 break
         warning = WarningType.NONE
         while len(string) > 0:
             previous_string = string
-            comma_separated = string.split(used_delim)
+            comma_separated = split_top_level(string, used_delim)
             allowed_objects = [ParseList, ParsePrimitive]
             if depth > 50:
                 allowed_objects = [ParsePrimitive]
             for obj in allowed_objects:
                 if obj.is_at_start(strip(string)):
                     current_index = 1
-                    while not obj.is_complete(
-                        strip(used_delim.join(comma_separated[:current_index]))
-                    ) or not obj.is_finished(strip(used_delim.join(comma_separated[:current_index]))):
+                    segment = strip(used_delim.join(comma_separated[:current_index]))
+                    while not obj.is_complete(segment) or not obj.is_finished(segment):
                         current_index += 1
                         if current_index >= len(comma_separated):
                             break
-                    if not obj.is_complete(
-                        strip(used_delim.join(comma_separated[:current_index]))
-                    ) or not obj.is_finished(strip(used_delim.join(comma_separated[:current_index]))):
+                        segment = strip(used_delim.join(comma_separated[:current_index]))
+                    if not obj.is_complete(segment) or not obj.is_finished(segment):
                         continue
 
                     if obj == ParseList:
                         parsed, new_warning = obj.parse(
-                            strip(used_delim.join(comma_separated[:current_index])),
-                            primitive_type=primitive_type,
-                            depth=depth + 1,
+                            segment, primitive_type=primitive_type, depth=depth + 1
                         )
                     else:
-                        parsed, new_warning = obj.parse(
-                            strip(used_delim.join(comma_separated[:current_index])), primitive_type=primitive_type
-                        )
+                        parsed, new_warning = obj.parse(segment, primitive_type=primitive_type)
                     warning = max(warning, new_warning)
                     output.append(parsed)
                     string = strip(used_delim.join(comma_separated[current_index:]))

@@ -4,7 +4,8 @@ You are verifying an original theorem statement and a perturbed theorem statemen
 These statements were extracted from a research paper abstract, and the perturbed statement is designed to be false in light of the original statement.
 
 Keep the pair only if all of the following are true:
-- both statements are self-contained and understandable without the abstract. In particular, neither can refer to the abstract or each other. 
+- both statements are self-contained and understandable without the abstract. In particular, neither can refer to the abstract or each other.
+- The interpretation of the question cannot depend on the exact convention used for a term or variable. This only applies if there are multiple conventions in the literature.
 - the original statement is theorem-like and specific
 - assuming the original statement is true, the perturbed statement is definitely false
 - the perturbed statement is still plausible enough that one might imagine it being true if they didn't know the original statement

@@ -87,6 +87,26 @@ def is_conversation_broken(msg_list):
     return False, ""
 
 
+def ensure_final_response_message(messages):
+    """
+    If a raw conversation ends with assistant reasoning instead of a final response,
+    append an explicit empty assistant response so the run can be graded as incorrect
+    instead of being treated as structurally broken.
+    """
+    if len(messages) == 0:
+        return messages
+
+    last_msg = messages[-1]
+    last_type = last_msg.get("type")
+    last_role = last_msg.get("role", "assistant" if last_type in ["cot", "thinking", "reasoning"] else None)
+    if last_role != "assistant" or last_type not in ["cot", "thinking", "reasoning"]:
+        return messages
+
+    patched_messages = [m.copy() if isinstance(m, dict) else m for m in messages]
+    patched_messages.append({"role": "assistant", "content": ""})
+    return patched_messages
+
+
 def normalize_conversation(messages):
     """
     Utility function for converting a conversation to the normalized/clean (.json) format from any other possible format.

@@ -25,6 +25,10 @@ class PureModelSolver(BaseSolver):
         self.client = APIClient(**default_api_client_args)
         last_chance_client_args = default_api_client_args.copy()
         last_chance_client_args["batch_processing"] = False
+        # The 300k-output beta only applies to the Batch API, so the sync last-chance call stays capped
+        # at 128k. Only clamp when an anthropic beta raised max_tokens above that sync limit.
+        if last_chance_client_args.get("anthropic_betas") and last_chance_client_args.get("max_tokens") is not None:
+            last_chance_client_args["max_tokens"] = min(last_chance_client_args["max_tokens"], 128000)
         self.last_chance_client = APIClient(**last_chance_client_args)
 
     def build_query(self, text: str | dict[str, Any] | None, image_b64):
