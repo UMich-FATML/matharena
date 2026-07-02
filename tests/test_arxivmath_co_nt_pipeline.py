@@ -86,6 +86,108 @@ def test_extract_co_nt_from_crawl_filters_and_writes_raw_paper_root(tmp_path):
     assert not _paper_dir(paper_root, "2401.00003").exists()
 
 
+def test_extract_from_crawl_accepts_requested_primary_categories(tmp_path):
+    from arxivmath.scripts.train.extract_co_nt_from_crawl import extract_from_crawl
+
+    crawl_root = tmp_path / "crawl"
+    paper_root = tmp_path / "paper_root"
+    crawl_root.mkdir()
+    _write_chunk(
+        crawl_root / "chunk_001.parquet",
+        [
+            {
+                "ext_arxiv": "2401.01001",
+                "primary_category": "math.AP",
+                "title": "Kept PDEs",
+                "abstract": "A useful PDE result.",
+                "authors": "Olga Ladyzhenskaya",
+                "categories": "math.AP math.NA",
+                "citationCount": 10.0,
+                "content_json": json.dumps({"text": "Full PDE text"}),
+            },
+            {
+                "ext_arxiv": "2401.01002",
+                "primary_category": "cs.IT",
+                "title": "Kept information theory",
+                "abstract": "A useful coding result.",
+                "authors": "Claude Shannon",
+                "categories": "cs.IT math.IT",
+                "citationCount": 11.0,
+                "content_json": json.dumps({"text": "Full information theory text"}),
+            },
+            {
+                "ext_arxiv": "2401.01003",
+                "primary_category": "math.NT",
+                "title": "Wrong primary category",
+                "abstract": "Not requested.",
+                "authors": "Carl Gauss",
+                "categories": "math.NT math.AP",
+                "citationCount": 99.0,
+                "content_json": json.dumps({"text": "Wrong category text"}),
+            },
+        ],
+    )
+
+    summary = extract_from_crawl(
+        crawl_root,
+        paper_root,
+        primary_categories=["math.AP", "cs.IT"],
+        min_citations=10,
+    )
+
+    assert summary.selected == 2
+    assert summary.written == 2
+    assert summary.skipped_wrong_category == 1
+    assert json.loads((_paper_dir(paper_root, "2401.01001") / "metadata.json").read_text(encoding="utf-8"))[
+        "primary_category"
+    ] == "math.AP"
+    assert json.loads((_paper_dir(paper_root, "2401.01002") / "metadata.json").read_text(encoding="utf-8"))[
+        "primary_category"
+    ] == "cs.IT"
+    assert not _paper_dir(paper_root, "2401.01003").exists()
+
+
+def test_extract_from_crawl_supports_custom_min_citations(tmp_path):
+    from arxivmath.scripts.train.extract_co_nt_from_crawl import extract_from_crawl
+
+    crawl_root = tmp_path / "crawl"
+    paper_root = tmp_path / "paper_root"
+    crawl_root.mkdir()
+    _write_chunk(
+        crawl_root / "chunk_001.parquet",
+        [
+            {
+                "ext_arxiv": "2401.02001",
+                "primary_category": "math.AP",
+                "title": "Below custom citation threshold",
+                "abstract": "Too low.",
+                "authors": "Maryam Mirzakhani",
+                "categories": "math.AP",
+                "citationCount": 10.0,
+                "content_json": json.dumps({"text": "Low citation text"}),
+            },
+            {
+                "ext_arxiv": "2401.02002",
+                "primary_category": "math.AP",
+                "title": "Meets custom citation threshold",
+                "abstract": "High enough.",
+                "authors": "Karen Uhlenbeck",
+                "categories": "math.AP",
+                "citationCount": 12.0,
+                "content_json": json.dumps({"text": "High citation text"}),
+            },
+        ],
+    )
+
+    summary = extract_from_crawl(crawl_root, paper_root, primary_categories=["math.AP"], min_citations=12)
+
+    assert summary.selected == 1
+    assert summary.written == 1
+    assert summary.skipped_low_citation == 1
+    assert not _paper_dir(paper_root, "2401.02001").exists()
+    assert _paper_dir(paper_root, "2401.02002").exists()
+
+
 def test_extract_co_nt_from_crawl_requires_full_text(tmp_path):
     from arxivmath.scripts.train.extract_co_nt_from_crawl import extract_from_crawl
 
@@ -277,3 +379,62 @@ def test_create_train_co_nt_script_supports_fulltext_model_override(tmp_path):
     assert "--model-config anthropic/opus_47_high" in calls[3]
     assert "--full-text-source local" in calls[3]
     assert "--limit 20" in calls[3]
+
+
+@pytest.mark.parametrize(
+    ("script_name", "paper_root", "primary_category"),
+    [
+        ("create_train_math_ap.sh", "arxivmath/train_math_ap", "math.AP"),
+        ("create_train_math_na.sh", "arxivmath/train_math_na", "math.NA"),
+        ("create_train_math_oc.sh", "arxivmath/train_math_oc", "math.OC"),
+        ("create_train_math_pr.sh", "arxivmath/train_math_pr", "math.PR"),
+        ("create_train_math_st.sh", "arxivmath/train_math_st", "math.ST"),
+        ("create_train_math_ds.sh", "arxivmath/train_math_ds", "math.DS"),
+        ("create_train_math_sp.sh", "arxivmath/train_math_sp", "math.SP"),
+        ("create_train_math_mp.sh", "arxivmath/train_math_mp", "math-ph"),
+        ("create_train_math_co.sh", "arxivmath/train_math_co", "math.CO"),
+        ("create_train_math_it.sh", "arxivmath/train_math_it", "math.IT"),
+        ("create_train_cs_it.sh", "arxivmath/train_cs_it", "cs.IT"),
+        ("create_train_cs_na.sh", "arxivmath/train_cs_na", "cs.NA"),
+        ("create_train_cs_sy.sh", "arxivmath/train_cs_sy", "cs.SY"),
+        ("create_train_eess_sy.sh", "arxivmath/train_eess_sy", "eess.SY"),
+    ],
+)
+def test_create_train_category_scripts_pass_category_defaults(tmp_path, script_name, paper_root, primary_category):
+    matharena_root = Path(__file__).resolve().parents[1]
+    script_path = matharena_root / "arxivmath" / "scripts" / script_name
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    pixi_log = tmp_path / "pixi_calls.log"
+    fake_pixi = fake_bin / "pixi"
+    fake_pixi.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$PIXI_CALL_LOG"\n',
+        encoding="utf-8",
+    )
+    fake_pixi.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    env["PIXI_CALL_LOG"] = str(pixi_log)
+    env["MODEL_CONFIG"] = "openai/gpt-54-high"
+
+    subprocess.run(["bash", str(script_path)], cwd=matharena_root, env=env, check=True)
+
+    calls = pixi_log.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 4
+    assert "extract_co_nt_from_crawl.py" in calls[0]
+    assert f"--paper-root {paper_root}" in calls[0]
+    assert f"--primary-category {primary_category}" in calls[0]
+    assert "--min-citations 10" in calls[0]
+    assert "--limit 200" in calls[0]
+    assert "create_queries.py" in calls[1]
+    assert f"--paper-root {paper_root}" in calls[1]
+    assert "--limit 200" in calls[1]
+    assert "verify_queries.py" in calls[2]
+    assert f"--paper-root {paper_root}" in calls[2]
+    assert "--limit 200" in calls[2]
+    assert "fulltext_review.py" in calls[3]
+    assert f"--paper-root {paper_root}" in calls[3]
+    assert "--full-text-source local" in calls[3]
+    assert "--limit 200" in calls[3]

@@ -26,7 +26,7 @@ DEFAULT_COLUMNS = [
     "content_json",
     "cited_arxiv_ids",
 ]
-PRIMARY_CATEGORIES = {"math.CO", "math.NT"}
+DEFAULT_PRIMARY_CATEGORIES = {"math.CO", "math.NT"}
 
 
 @dataclass
@@ -174,9 +174,12 @@ def extract_from_crawl(
     paper_root: str | os.PathLike[str],
     *,
     limit: int | None = None,
+    primary_categories: list[str] | tuple[str, ...] | set[str] | None = None,
+    min_citations: float = 10,
 ) -> ExtractionSummary:
     crawl_root = Path(crawl_root)
     paper_root = Path(paper_root)
+    primary_category_set = set(primary_categories or DEFAULT_PRIMARY_CATEGORIES)
     summary = ExtractionSummary()
 
     for chunk_path in _chunk_paths(crawl_root):
@@ -190,11 +193,11 @@ def extract_from_crawl(
                 if not arxiv_id:
                     summary.skipped_missing_arxiv_id += 1
                     continue
-                if _clean_string(row.get("primary_category")) not in PRIMARY_CATEGORIES:
+                if _clean_string(row.get("primary_category")) not in primary_category_set:
                     summary.skipped_wrong_category += 1
                     continue
                 citation_count = _clean_scalar(row.get("citationCount"))
-                if citation_count is None or float(citation_count) < 10:
+                if citation_count is None or float(citation_count) < min_citations:
                     summary.skipped_low_citation += 1
                     continue
 
@@ -216,16 +219,37 @@ def extract_from_crawl(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Extract math.CO/math.NT arXiv papers from the local parquet crawl into a MathArena paper root."
+        description="Extract cited arXiv papers from the local parquet crawl into a MathArena paper root."
     )
     parser.add_argument("--crawl-root", default="../arxiv_papers_data", help="Root containing chunk_*.parquet files.")
     parser.add_argument("--paper-root", default="arxivmath/train_co_nt", help="Output paper-root directory.")
     parser.add_argument("--limit", type=int, default=None, help="Optional limit on written papers.")
+    parser.add_argument(
+        "--primary-category",
+        action="append",
+        dest="primary_categories",
+        default=None,
+        help="Primary arXiv category to include. May be repeated. Defaults to math.CO and math.NT.",
+    )
+    parser.add_argument(
+        "--min-citations",
+        type=float,
+        default=10,
+        help="Minimum citationCount required for extraction.",
+    )
     args = parser.parse_args()
 
-    summary = extract_from_crawl(args.crawl_root, args.paper_root, limit=args.limit)
+    categories = args.primary_categories or sorted(DEFAULT_PRIMARY_CATEGORIES)
+    summary = extract_from_crawl(
+        args.crawl_root,
+        args.paper_root,
+        limit=args.limit,
+        primary_categories=categories,
+        min_citations=args.min_citations,
+    )
     print(
-        "Extracted CO/NT crawl papers: "
+        f"Extracted crawl papers for primary_categories={','.join(categories)} "
+        f"min_citations={args.min_citations}: "
         f"inspected={summary.inspected}, selected={summary.selected}, written={summary.written}, "
         f"skipped_missing_arxiv_id={summary.skipped_missing_arxiv_id}, "
         f"skipped_wrong_category={summary.skipped_wrong_category}, "
