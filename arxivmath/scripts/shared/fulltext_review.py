@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import argparse
+import os
 from datetime import datetime
 
+from dotenv import find_dotenv, load_dotenv
 from tqdm import tqdm
 
 from matharena.api_client import APIClient
@@ -26,6 +28,30 @@ FALSE_ANNOTATION_FILENAME = "llm_metadata_false.json"
 LEAN_ANNOTATION_FILENAME = "metadata_lean_abstract.json"
 
 
+def load_full_texts(paper_root, paper_ids, source="ocr", redo=False):
+    if source == "ocr":
+        return ensure_ocr_batch(paper_ids, redo=redo)
+    if source != "local":
+        raise ValueError(f"Unsupported full-text source: {source}")
+
+    full_texts = {}
+    missing = []
+    for paper_id in paper_ids:
+        full_text_path = os.path.join(paper_root, paper_id, "full_text.md")
+        if not os.path.isfile(full_text_path):
+            missing.append(full_text_path)
+            continue
+        with open(full_text_path, "r", encoding="utf-8") as f:
+            full_texts[paper_id] = f.read()
+    if missing:
+        raise FileNotFoundError(
+            "Missing local full_text.md files for full-text review: "
+            + ", ".join(missing[:10])
+            + (" ..." if len(missing) > 10 else "")
+        )
+    return full_texts
+
+
 def should_review(annotation, overwrite=False, key="full_text_review", lean_mode=False):
     if annotation.get("keep") is not True:
         return False
@@ -40,6 +66,7 @@ def should_review(annotation, overwrite=False, key="full_text_review", lean_mode
 
 
 def main():
+    load_dotenv(find_dotenv(usecwd=True))
     parser = argparse.ArgumentParser(description="Re-check kept arXiv questions against full paper OCR.")
     parser.add_argument("--model-config", required=True, help="Path under ../configs/models (e.g. openai/gpt-5-mini).")
     parser.add_argument("--paper-root", default="arxivmath/paper", help="Root directory containing paper folders.")
@@ -51,6 +78,12 @@ def main():
     parser.add_argument("--key", default="full_text_review", help="Annotation key to store the review under.")
     parser.add_argument("--enable-web-search", action="store_true", help="Enable web search for additional context.")
     parser.add_argument("--skip-ocr", action="store_true", help="Skip OCR and full text injection.")
+    parser.add_argument(
+        "--full-text-source",
+        choices=["ocr", "local"],
+        default="ocr",
+        help="Source for full text when not using --skip-ocr. 'local' reads full_text.md from each paper directory.",
+    )
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("--false", action="store_true", help="Use the false-statement pipeline.")
     mode_group.add_argument("--lean", action="store_true", help="Use the Lean abstract-candidate pipeline.")
@@ -150,8 +183,10 @@ def main():
 
     full_texts = {}
     if not args.skip_ocr and args.key != "solid_authors":
-        full_texts = ensure_ocr_batch(
+        full_texts = load_full_texts(
+            args.paper_root,
             [paper_id for paper_id, *_ in query_inputs],
+            source=args.full_text_source,
             redo=args.redo_ocr,
         )
         missing_text_ids = {paper_id for paper_id, *_ in query_inputs if paper_id not in full_texts}

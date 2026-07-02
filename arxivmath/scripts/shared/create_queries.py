@@ -4,6 +4,8 @@ import os
 import re
 import signal
 
+from dotenv import find_dotenv, load_dotenv
+
 from matharena.api_client import APIClient
 from matharena.arxivbench_utils import (
     extract_json,
@@ -130,6 +132,7 @@ def check_arxiv_answer_parser_safety(answer):
 
 
 def main():
+    load_dotenv(find_dotenv(usecwd=True))
     parser = argparse.ArgumentParser(description="Generate paper annotations from abstracts using an LLM.")
     parser.add_argument("--model-config", required=True, help="Path under ../configs/models (e.g. openai/gpt-5-mini).")
     parser.add_argument("--paper-root", default="arxivmath/paper", help="Root directory containing paper folders.")

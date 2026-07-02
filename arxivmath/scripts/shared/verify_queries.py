@@ -2,6 +2,8 @@
 import argparse
 from datetime import datetime
 
+from dotenv import find_dotenv, load_dotenv
+
 from matharena.api_client import APIClient
 from matharena.arxivbench_utils import (
     extract_json,
@@ -101,6 +103,7 @@ def coerce_bool(value):
 
 
 def main():
+    load_dotenv(find_dotenv(usecwd=True))
     parser = argparse.ArgumentParser(description="Verify kept LLM annotations against the criteria.")
     parser.add_argument("--model-config", required=True, help="Path under ../configs/models (e.g. openai/gpt-5-mini).")
     parser.add_argument("--paper-root", default="arxivmath/paper", help="Root directory containing paper folders.")
