@@ -1,4 +1,4 @@
-I am creating a mathematical benchmark for LLMs called ArXivMath. For this purpose, I am extracting questions from recent arXiv papers along with their answers. In particular, I gave an LLM the title and abstract of each paper and asked it to generate a question and answer pair about the paper's main result.
+I am creating a mathematical benchmark for LLMs called ArXivMath. For this purpose, I am extracting questions from recent arXiv papers along with their answers. In particular, I gave an LLM the full text of each paper and asked it to generate a question and answer pair about the paper's main result.
 
 ## Problem
 However, I have noticed that a lot of the questions can be answered just by looking at prior work cited in the paper, without needing to understand the new contributions of the paper itself. For instance,
