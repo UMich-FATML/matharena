@@ -27,6 +27,8 @@ cd "${MATHARENA_ROOT}"
 "${PIXI[@]}" python arxivmath/scripts/shared/create_queries.py \
   --model-config "${MODEL_CONFIG}" \
   --paper-root "${PAPER_ROOT}" \
+  --prompt arxivmath/prompts/arxiv/query_fulltext.md \
+  --full-text-source local \
   "${LIMIT_ARGS[@]}"
 
 "${PIXI[@]}" python arxivmath/scripts/shared/verify_queries.py \

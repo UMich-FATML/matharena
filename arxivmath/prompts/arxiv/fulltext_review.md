@@ -1,6 +1,5 @@
-You are reviewing a math question that was created from a paper abstract only.
+You are reviewing a math question that was created from a research paper.
 This math question is supposed to be an extremely challenging problem that requires deep understanding of the paper's content. It is used to benchmark advanced AI systems.
-You now have OCR of the full paper.
 
 Your task:
 - Discard the question if the full paper shows the question is not a major contribution of the paper, is incorrect, or is missing significant context (in particular, assumptions only mentioned in the full text and not in the abstract).

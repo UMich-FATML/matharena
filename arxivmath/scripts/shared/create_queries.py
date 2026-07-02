@@ -78,6 +78,14 @@ def should_skip_license(metadata, skip_arxiv_license=False):
     return (metadata.get("license") or "").strip() == ARXIV_NONEXCLUSIVE_LICENSE_URL
 
 
+def load_local_full_text(paper_root, paper_id):
+    full_text_path = os.path.join(paper_root, paper_id, "full_text.md")
+    if not os.path.isfile(full_text_path):
+        raise FileNotFoundError(f"Missing local full_text.md for question generation: {full_text_path}")
+    with open(full_text_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
 def _arxiv_answer_mutations(answer):
     for match in ANSWER_NUMBER_RE.finditer(answer):
         yield answer[: match.start()] + str(int(match.group(0)) + 1) + answer[match.end() :]
@@ -139,6 +147,12 @@ def main():
     parser.add_argument("--prompt", default=None, help="Prompt template path.")
     parser.add_argument("--limit", type=int, default=None, help="Optional limit on number of papers to query.")
     parser.add_argument("--max-papers", type=int, default=None, help="Optional limit on paper ids to inspect.")
+    parser.add_argument(
+        "--full-text-source",
+        choices=["none", "local"],
+        default="none",
+        help="Optional source for {full_text} prompt injection. 'local' reads full_text.md from each paper directory.",
+    )
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("--false", action="store_true", help="Use the false-statement pipeline.")
     mode_group.add_argument("--lean", action="store_true", help="Use the Lean abstract-candidate pipeline.")
@@ -180,9 +194,13 @@ def main():
         metadata = load_metadata(args.paper_root, paper_id)
         if should_skip_license(metadata, skip_arxiv_license=args.skip_arxiv_license):
             continue
+        full_text = ""
+        if args.full_text_source == "local":
+            full_text = load_local_full_text(args.paper_root, paper_id)
         prompt = prompt_template.format(
             title=(metadata.get("title") or "").strip(),
             abstract=(metadata.get("abstract") or "").strip(),
+            full_text=full_text,
         )
         queries.append([{"role": "user", "content": prompt}])
         query_paper_ids.append(paper_id)

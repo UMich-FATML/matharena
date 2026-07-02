@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -139,3 +140,98 @@ def test_fulltext_review_local_source_errors_when_full_text_missing(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="full_text.md"):
         fulltext_review.load_full_texts(paper_root, ["2401.00006"], source="local")
+
+
+def test_create_queries_local_full_text_source_injects_full_text(tmp_path, monkeypatch):
+    from arxivmath.scripts.shared import create_queries
+
+    paper_root = tmp_path / "paper_root"
+    paper_dir = _paper_dir(paper_root, "2401.00007")
+    paper_dir.mkdir(parents=True)
+    (paper_dir / "metadata.json").write_text(
+        json.dumps({"title": "Full-text title", "abstract": "Abstract only."}),
+        encoding="utf-8",
+    )
+    (paper_dir / "full_text.md").write_text("Full paper body with theorem details.\n", encoding="utf-8")
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Title={title}\nAbstract={abstract}\nFull={full_text}", encoding="utf-8")
+    model_config_path = tmp_path / "model.yaml"
+    model_config_path.write_text("model: fake-model\napi: fake\n", encoding="utf-8")
+
+    captured_queries = []
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            assert kwargs["model"] == "fake-model"
+
+        def run_queries(self, queries):
+            captured_queries.extend(queries)
+            yield 0, [{"role": "assistant", "content": '{"keep": false}'}], {"cost": 0.0}
+
+    monkeypatch.setattr(create_queries, "APIClient", FakeClient)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "create_queries.py",
+            "--model-config",
+            str(model_config_path),
+            "--paper-root",
+            str(paper_root),
+            "--prompt",
+            str(prompt_path),
+            "--full-text-source",
+            "local",
+        ],
+    )
+
+    create_queries.main()
+
+    assert len(captured_queries) == 1
+    prompt = captured_queries[0][0]["content"]
+    assert "Title=Full-text title" in prompt
+    assert "Abstract=Abstract only." in prompt
+    assert "Full=Full paper body with theorem details.\n" in prompt
+
+
+def test_create_queries_local_full_text_source_errors_when_full_text_missing(tmp_path, monkeypatch):
+    from arxivmath.scripts.shared import create_queries
+
+    paper_root = tmp_path / "paper_root"
+    paper_dir = _paper_dir(paper_root, "2401.00008")
+    paper_dir.mkdir(parents=True)
+    (paper_dir / "metadata.json").write_text(
+        json.dumps({"title": "Missing full text", "abstract": "Abstract only."}),
+        encoding="utf-8",
+    )
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Full={full_text}", encoding="utf-8")
+    model_config_path = tmp_path / "model.yaml"
+    model_config_path.write_text("model: fake-model\napi: fake\n", encoding="utf-8")
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_queries(self, queries):
+            raise AssertionError("run_queries should not be called when full_text.md is missing")
+
+    monkeypatch.setattr(create_queries, "APIClient", FakeClient)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "create_queries.py",
+            "--model-config",
+            str(model_config_path),
+            "--paper-root",
+            str(paper_root),
+            "--prompt",
+            str(prompt_path),
+            "--full-text-source",
+            "local",
+        ],
+    )
+
+    with pytest.raises(FileNotFoundError, match="full_text.md"):
+        create_queries.main()
