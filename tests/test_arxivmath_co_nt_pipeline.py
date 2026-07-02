@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -235,3 +237,42 @@ def test_create_queries_local_full_text_source_errors_when_full_text_missing(tmp
 
     with pytest.raises(FileNotFoundError, match="full_text.md"):
         create_queries.main()
+
+
+def test_create_train_co_nt_script_supports_fulltext_model_override(tmp_path):
+    matharena_root = Path(__file__).resolve().parents[1]
+    script_path = matharena_root / "arxivmath" / "scripts" / "create_train_co_nt.sh"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    pixi_log = tmp_path / "pixi_calls.log"
+    fake_pixi = fake_bin / "pixi"
+    fake_pixi.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$PIXI_CALL_LOG"\n',
+        encoding="utf-8",
+    )
+    fake_pixi.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    env["PIXI_CALL_LOG"] = str(pixi_log)
+    env["LIMIT"] = "20"
+    env["MODEL_CONFIG"] = "openai/gpt-54-high"
+    env["FULLTEXT_REVIEW_MODEL_CONFIG"] = "anthropic/opus_47_high"
+
+    subprocess.run(["bash", str(script_path)], cwd=matharena_root, env=env, check=True)
+
+    calls = pixi_log.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 4
+    assert "extract_co_nt_from_crawl.py" in calls[0]
+    assert "--limit 20" in calls[0]
+    assert "create_queries.py" in calls[1]
+    assert "--model-config openai/gpt-54-high" in calls[1]
+    assert "--limit 20" in calls[1]
+    assert "verify_queries.py" in calls[2]
+    assert "--model-config openai/gpt-54-high" in calls[2]
+    assert "--limit 20" in calls[2]
+    assert "fulltext_review.py" in calls[3]
+    assert "--model-config anthropic/opus_47_high" in calls[3]
+    assert "--full-text-source local" in calls[3]
+    assert "--limit 20" in calls[3]

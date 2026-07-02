@@ -8,6 +8,9 @@ REPO_ROOT="$(cd "${MATHARENA_ROOT}/.." && pwd)"
 export PYTHONPATH="${MATHARENA_ROOT}:${MATHARENA_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 MODEL_CONFIG="${MODEL_CONFIG:-openai/gpt-54-high}"
+CREATE_QUERIES_MODEL_CONFIG="${CREATE_QUERIES_MODEL_CONFIG:-${MODEL_CONFIG}}"
+VERIFY_QUERIES_MODEL_CONFIG="${VERIFY_QUERIES_MODEL_CONFIG:-${MODEL_CONFIG}}"
+FULLTEXT_REVIEW_MODEL_CONFIG="${FULLTEXT_REVIEW_MODEL_CONFIG:-${MODEL_CONFIG}}"
 PAPER_ROOT="${PAPER_ROOT:-arxivmath/train_co_nt}"
 CRAWL_ROOT="${CRAWL_ROOT:-../arxiv_papers_data}"
 
@@ -25,19 +28,19 @@ cd "${MATHARENA_ROOT}"
   "${LIMIT_ARGS[@]}"
 
 "${PIXI[@]}" python arxivmath/scripts/shared/create_queries.py \
-  --model-config "${MODEL_CONFIG}" \
+  --model-config "${CREATE_QUERIES_MODEL_CONFIG}" \
   --paper-root "${PAPER_ROOT}" \
   --prompt arxivmath/prompts/arxiv/query_fulltext.md \
   --full-text-source local \
   "${LIMIT_ARGS[@]}"
 
 "${PIXI[@]}" python arxivmath/scripts/shared/verify_queries.py \
-  --model-config "${MODEL_CONFIG}" \
+  --model-config "${VERIFY_QUERIES_MODEL_CONFIG}" \
   --paper-root "${PAPER_ROOT}" \
   "${LIMIT_ARGS[@]}"
 
 "${PIXI[@]}" python arxivmath/scripts/shared/fulltext_review.py \
-  --model-config "${MODEL_CONFIG}" \
+  --model-config "${FULLTEXT_REVIEW_MODEL_CONFIG}" \
   --paper-root "${PAPER_ROOT}" \
   --full-text-source local \
   "${LIMIT_ARGS[@]}"
