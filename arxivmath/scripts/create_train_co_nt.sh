@@ -14,7 +14,7 @@ FULLTEXT_REVIEW_MODEL_CONFIG="${FULLTEXT_REVIEW_MODEL_CONFIG:-${MODEL_CONFIG}}"
 PAPER_ROOT="${PAPER_ROOT:-arxivmath/train_co_nt}"
 CRAWL_ROOT="${CRAWL_ROOT:-../arxiv_papers_data}"
 
-PIXI=(pixi --manifest-path "${REPO_ROOT}/pixi.toml" run)
+PIXI=(pixi run --manifest-path "${REPO_ROOT}/pixi.toml")
 LIMIT_ARGS=()
 if [[ -n "${LIMIT:-}" ]]; then
   LIMIT_ARGS=(--limit "${LIMIT}")

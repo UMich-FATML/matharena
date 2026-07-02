@@ -264,6 +264,7 @@ def test_create_train_co_nt_script_supports_fulltext_model_override(tmp_path):
 
     calls = pixi_log.read_text(encoding="utf-8").splitlines()
     assert len(calls) == 4
+    assert all(call.startswith("run --manifest-path ") for call in calls)
     assert "extract_co_nt_from_crawl.py" in calls[0]
     assert "--limit 20" in calls[0]
     assert "create_queries.py" in calls[1]
