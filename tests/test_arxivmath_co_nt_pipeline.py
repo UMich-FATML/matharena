@@ -66,7 +66,7 @@ def test_ingest_arxiv_crawl_filters_and_writes_raw_paper_root(tmp_path):
         ],
     )
 
-    summary = extract_from_crawl(crawl_root, paper_root)
+    summary = extract_from_crawl(crawl_root, paper_root, primary_categories=["math.CO", "math.NT"])
 
     assert summary.selected == 1
     assert summary.written == 1
@@ -147,6 +147,54 @@ def test_extract_from_crawl_accepts_requested_primary_categories(tmp_path):
     assert not _paper_dir(paper_root, "2401.01003").exists()
 
 
+def test_extract_from_crawl_omits_category_filter_when_categories_are_none(tmp_path):
+    from arxivmath.scripts.train.ingest_arxiv_crawl import extract_from_crawl
+
+    crawl_root = tmp_path / "crawl"
+    paper_root = tmp_path / "paper_root"
+    crawl_root.mkdir()
+    _write_chunk(
+        crawl_root / "chunk_001.parquet",
+        [
+            {
+                "ext_arxiv": "invalid-but-present",
+                "primary_category": "math.AG",
+                "citationCount": 10,
+                "content_json": json.dumps({"text": "Full algebraic geometry text"}),
+            }
+        ],
+    )
+
+    summary = extract_from_crawl(crawl_root, paper_root, primary_categories=None)
+
+    assert summary.written == 1
+    assert summary.skipped_wrong_category == 0
+
+
+def test_extract_from_crawl_empty_category_collection_selects_nothing(tmp_path):
+    from arxivmath.scripts.train.ingest_arxiv_crawl import extract_from_crawl
+
+    crawl_root = tmp_path / "crawl"
+    paper_root = tmp_path / "paper_root"
+    crawl_root.mkdir()
+    _write_chunk(
+        crawl_root / "chunk_001.parquet",
+        [
+            {
+                "ext_arxiv": "2401.01004",
+                "primary_category": "math.AG",
+                "citationCount": 10,
+                "content_json": json.dumps({"text": "Full algebraic geometry text"}),
+            }
+        ],
+    )
+
+    summary = extract_from_crawl(crawl_root, paper_root, primary_categories=[])
+
+    assert summary.written == 0
+    assert summary.skipped_wrong_category == 1
+
+
 def test_extract_from_crawl_supports_custom_min_citations(tmp_path):
     from arxivmath.scripts.train.ingest_arxiv_crawl import extract_from_crawl
 
@@ -206,7 +254,7 @@ def test_posted_month_is_derived_from_modern_and_legacy_arxiv_ids(arxiv_id, expe
     assert _posted_month_from_arxiv_id(arxiv_id) == expected
 
 
-def test_extract_from_crawl_filters_by_inclusive_posted_month_range(tmp_path):
+def test_extract_from_crawl_filters_by_requested_posted_months(tmp_path):
     from arxivmath.scripts.train.ingest_arxiv_crawl import extract_from_crawl
 
     crawl_root = tmp_path / "crawl"
@@ -228,42 +276,62 @@ def test_extract_from_crawl_filters_by_inclusive_posted_month_range(tmp_path):
         crawl_root,
         paper_root,
         primary_categories=["math.AP"],
-        posted_from_month="2024-01",
-        posted_until_month="2024-03",
+        months=["2024-01", "2024-03", "2024-03"],
     )
 
     assert summary.selected == 2
     assert summary.written == 2
-    assert summary.skipped_outside_posted_month_range == 3
+    assert summary.skipped_unselected_posted_month == 3
     assert _paper_dir(paper_root, "2401.00001").exists()
     assert _paper_dir(paper_root, "2403.00001").exists()
     assert not _paper_dir(paper_root, "2312.00001").exists()
     assert not _paper_dir(paper_root, "2404.00001").exists()
 
 
-@pytest.mark.parametrize(
-    ("posted_from_month", "posted_until_month", "message"),
-    [
-        ("2024-1", None, "expected YYYY-MM"),
-        (None, "2024-13", "expected YYYY-MM"),
-        ("2024-03", "2024-01", "must not be after"),
-    ],
-)
-def test_extract_from_crawl_validates_posted_month_range(
-    tmp_path,
-    posted_from_month,
-    posted_until_month,
-    message,
-):
+@pytest.mark.parametrize("month", ["2024-1", "2024-13"])
+def test_extract_from_crawl_validates_requested_months(tmp_path, month):
     from arxivmath.scripts.train.ingest_arxiv_crawl import extract_from_crawl
 
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError, match="expected YYYY-MM"):
         extract_from_crawl(
             tmp_path / "crawl",
             tmp_path / "paper_root",
-            posted_from_month=posted_from_month,
-            posted_until_month=posted_until_month,
+            months=["2024-01", month],
         )
+
+
+def test_extract_from_crawl_empty_month_collection_selects_nothing(tmp_path):
+    from arxivmath.scripts.train.ingest_arxiv_crawl import extract_from_crawl
+
+    crawl_root = tmp_path / "crawl"
+    paper_root = tmp_path / "paper_root"
+    crawl_root.mkdir()
+    _write_chunk(
+        crawl_root / "chunk_001.parquet",
+        [
+            {
+                "ext_arxiv": "2401.00001",
+                "primary_category": "math.AP",
+                "citationCount": 10,
+                "content_json": json.dumps({"text": "Full text"}),
+            }
+        ],
+    )
+
+    summary = extract_from_crawl(crawl_root, paper_root, months=[])
+
+    assert summary.written == 0
+    assert summary.skipped_unselected_posted_month == 1
+
+
+def test_ingest_argument_parser_uses_cli_only_category_defaults():
+    from arxivmath.scripts.train.ingest_arxiv_crawl import _create_argument_parser
+
+    parser = _create_argument_parser()
+
+    assert parser.parse_args([]).primary_categories == ["math.CO", "math.NT"]
+    explicit = parser.parse_args(["--primary-category", "math.AP", "cs.IT"])
+    assert explicit.primary_categories == ["math.AP", "cs.IT"]
 
 
 def test_selection_filters_stop_after_first_rejection():
@@ -556,8 +624,7 @@ def test_create_train_category_script_supports_multiple_categories_and_overrides
     env["PAPER_ROOT"] = "arxivmath/train_co_nt"
     env["LIMIT"] = "20"
     env["MIN_CITATIONS"] = "12"
-    env["POSTED_FROM_MONTH"] = "2020-01"
-    env["POSTED_UNTIL_MONTH"] = "2024-12"
+    env["POSTED_MONTHS"] = "2020-01 2024-12"
     env["MODEL_CONFIG"] = "openai/gpt-54-high"
     env["FULLTEXT_REVIEW_MODEL_CONFIG"] = "anthropic/opus_47_high"
 
@@ -566,9 +633,9 @@ def test_create_train_category_script_supports_multiple_categories_and_overrides
     calls = pixi_log.read_text(encoding="utf-8").splitlines()
     assert len(calls) == 4
     assert "--paper-root arxivmath/train_co_nt" in calls[0]
-    assert "--primary-category math.CO --primary-category math.NT" in calls[0]
+    assert "--primary-category math.CO math.NT" in calls[0]
     assert "--min-citations 12" in calls[0]
-    assert "--from-month 2020-01 --until-month 2024-12" in calls[0]
+    assert "--months 2020-01 2024-12" in calls[0]
     assert "--limit 20" in calls[0]
     assert "--model-config anthropic/opus_47_high" in calls[3]
     assert "--limit 20" in calls[3]

@@ -20,21 +20,15 @@ PAPER_ROOT="${PAPER_ROOT:-arxivmath/train_category}"
 CRAWL_ROOT="${CRAWL_ROOT:-../arxiv_papers_data}"
 LIMIT="${LIMIT:-200}"
 MIN_CITATIONS="${MIN_CITATIONS:-10}"
-POSTED_FROM_MONTH="${POSTED_FROM_MONTH:-}"
-POSTED_UNTIL_MONTH="${POSTED_UNTIL_MONTH:-}"
+POSTED_MONTHS="${POSTED_MONTHS:-}"
 
 PIXI=(pixi run --manifest-path "${REPO_ROOT}/pixi.toml")
 LIMIT_ARGS=(--limit "${LIMIT}")
-PRIMARY_CATEGORY_ARGS=()
-for primary_category in "$@"; do
-  PRIMARY_CATEGORY_ARGS+=(--primary-category "${primary_category}")
-done
+PRIMARY_CATEGORY_ARGS=(--primary-category "$@")
 POSTED_MONTH_ARGS=()
-if [[ -n "${POSTED_FROM_MONTH}" ]]; then
-  POSTED_MONTH_ARGS+=(--from-month "${POSTED_FROM_MONTH}")
-fi
-if [[ -n "${POSTED_UNTIL_MONTH}" ]]; then
-  POSTED_MONTH_ARGS+=(--until-month "${POSTED_UNTIL_MONTH}")
+if [[ -n "${POSTED_MONTHS}" ]]; then
+  read -r -a POSTED_MONTH_VALUES <<< "${POSTED_MONTHS}"
+  POSTED_MONTH_ARGS=(--months "${POSTED_MONTH_VALUES[@]}")
 fi
 
 cd "${MATHARENA_ROOT}"
