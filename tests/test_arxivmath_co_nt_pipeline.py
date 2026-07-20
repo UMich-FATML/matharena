@@ -6,6 +6,14 @@ import pandas as pd
 import pytest
 
 
+def test_parser_safety_timeout_escapes_broad_exception_handlers():
+    from arxivmath.scripts.shared.create_queries import _ParserSafetyTimeout, _raise_parser_safety_timeout
+
+    assert not issubclass(_ParserSafetyTimeout, Exception)
+    with pytest.raises(_ParserSafetyTimeout):
+        _raise_parser_safety_timeout(None, None)
+
+
 def _write_chunk(path: Path, rows: list[dict]) -> None:
     pd.DataFrame(rows).to_parquet(path, index=False)
 

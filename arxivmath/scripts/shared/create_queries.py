@@ -101,8 +101,12 @@ def _arxiv_parser_reject(reason, **extra):
     return {"keep": False, "reason": reason, **extra}
 
 
+class _ParserSafetyTimeout(BaseException):
+    """Escape parser code that catches ordinary Exception subclasses."""
+
+
 def _raise_parser_safety_timeout(signum, frame):
-    raise TimeoutError
+    raise _ParserSafetyTimeout
 
 
 def check_arxiv_answer_parser_safety(answer):
@@ -265,7 +269,7 @@ def main():
                     signal.alarm(30)
                     try:
                         parser_safety = check_arxiv_answer_parser_safety(annotation.get("answer", ""))
-                    except TimeoutError:
+                    except _ParserSafetyTimeout:
                         parser_safety = _arxiv_parser_reject("parser_safety_timeout", timeout_seconds=30)
                     finally:
                         signal.alarm(0)
