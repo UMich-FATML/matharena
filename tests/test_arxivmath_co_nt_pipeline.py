@@ -188,6 +188,48 @@ def test_extract_from_crawl_supports_custom_min_citations(tmp_path):
     assert _paper_dir(paper_root, "2401.02002").exists()
 
 
+def test_selection_filters_stop_after_first_rejection():
+    from arxivmath.scripts.train.ingest_arxiv_crawl import (
+        ExtractionSummary,
+        _passes_selection_filters,
+        _selection_filters,
+    )
+
+    summary = ExtractionSummary()
+    filters = _selection_filters({"math.AP"}, min_citations=10)
+
+    accepted = _passes_selection_filters(
+        {"primary_category": "math.NT", "citationCount": 1},
+        filters,
+        summary,
+    )
+
+    assert not accepted
+    assert summary.skipped_wrong_category == 1
+    assert summary.skipped_low_citation == 0
+
+
+def test_selection_filters_accept_row_matching_every_filter():
+    from arxivmath.scripts.train.ingest_arxiv_crawl import (
+        ExtractionSummary,
+        _passes_selection_filters,
+        _selection_filters,
+    )
+
+    summary = ExtractionSummary()
+    filters = _selection_filters({"math.AP"}, min_citations=10)
+
+    accepted = _passes_selection_filters(
+        {"primary_category": "math.AP", "citationCount": 10},
+        filters,
+        summary,
+    )
+
+    assert accepted
+    assert summary.skipped_wrong_category == 0
+    assert summary.skipped_low_citation == 0
+
+
 def test_ingest_arxiv_crawl_requires_full_text(tmp_path):
     from arxivmath.scripts.train.ingest_arxiv_crawl import extract_from_crawl
 

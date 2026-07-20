@@ -3,6 +3,7 @@ import argparse
 import json
 import math
 import os
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,15 @@ class ExtractionSummary:
     skipped_low_citation: int = 0
     skipped_wrong_category: int = 0
     skipped_missing_text: int = 0
+
+
+@dataclass(frozen=True)
+class _SelectionFilter:
+    """A row predicate and the bookkeeping needed when it rejects a row."""
+
+    predicate: Callable[[dict[str, Any]], bool]
+    required_columns: tuple[str, ...]
+    rejection_counter: str
 
 
 def safe_dir_name(arxiv_id: str) -> str:
@@ -164,9 +174,58 @@ def _chunk_paths(crawl_root: Path) -> list[Path]:
     return sorted(crawl_root.glob("chunk_*.parquet"))
 
 
-def _read_columns(parquet_file: pq.ParquetFile) -> list[str]:
+def _read_columns(
+    parquet_file: pq.ParquetFile,
+    selection_filters: Sequence[_SelectionFilter],
+) -> list[str]:
     available = set(parquet_file.schema_arrow.names)
-    return [column for column in DEFAULT_COLUMNS if column in available]
+    requested = dict.fromkeys(DEFAULT_COLUMNS)
+    for selection_filter in selection_filters:
+        requested.update(dict.fromkeys(selection_filter.required_columns))
+    return [column for column in requested if column in available]
+
+
+def _matches_primary_category(row: dict[str, Any], primary_categories: set[str]) -> bool:
+    return _clean_string(row.get("primary_category")) in primary_categories
+
+
+def _meets_minimum_citations(row: dict[str, Any], min_citations: float) -> bool:
+    citation_count = _clean_scalar(row.get("citationCount"))
+    return citation_count is not None and float(citation_count) >= min_citations
+
+
+def _selection_filters(primary_categories: set[str], min_citations: float) -> tuple[_SelectionFilter, ...]:
+    """Build the ordered row filters used by the crawl ingester.
+
+    Add future selection rules here, together with the parquet columns they
+    require and the ExtractionSummary counter used for rejected rows.
+    """
+    return (
+        _SelectionFilter(
+            predicate=lambda row: _matches_primary_category(row, primary_categories),
+            required_columns=("primary_category",),
+            rejection_counter="skipped_wrong_category",
+        ),
+        _SelectionFilter(
+            predicate=lambda row: _meets_minimum_citations(row, min_citations),
+            required_columns=("citationCount",),
+            rejection_counter="skipped_low_citation",
+        ),
+    )
+
+
+def _passes_selection_filters(
+    row: dict[str, Any],
+    selection_filters: Sequence[_SelectionFilter],
+    summary: ExtractionSummary,
+) -> bool:
+    for selection_filter in selection_filters:
+        if selection_filter.predicate(row):
+            continue
+        rejection_count = getattr(summary, selection_filter.rejection_counter)
+        setattr(summary, selection_filter.rejection_counter, rejection_count + 1)
+        return False
+    return True
 
 
 def extract_from_crawl(
@@ -180,11 +239,12 @@ def extract_from_crawl(
     crawl_root = Path(crawl_root)
     paper_root = Path(paper_root)
     primary_category_set = set(primary_categories or DEFAULT_PRIMARY_CATEGORIES)
+    selection_filters = _selection_filters(primary_category_set, min_citations)
     summary = ExtractionSummary()
 
     for chunk_path in _chunk_paths(crawl_root):
         parquet_file = pq.ParquetFile(chunk_path)
-        columns = _read_columns(parquet_file)
+        columns = _read_columns(parquet_file, selection_filters)
         for row_group_idx in range(parquet_file.num_row_groups):
             table = parquet_file.read_row_group(row_group_idx, columns=columns)
             for row in table.to_pylist():
@@ -193,12 +253,7 @@ def extract_from_crawl(
                 if not arxiv_id:
                     summary.skipped_missing_arxiv_id += 1
                     continue
-                if _clean_string(row.get("primary_category")) not in primary_category_set:
-                    summary.skipped_wrong_category += 1
-                    continue
-                citation_count = _clean_scalar(row.get("citationCount"))
-                if citation_count is None or float(citation_count) < min_citations:
-                    summary.skipped_low_citation += 1
+                if not _passes_selection_filters(row, selection_filters, summary):
                     continue
 
                 summary.selected += 1
