@@ -20,6 +20,8 @@ PAPER_ROOT="${PAPER_ROOT:-arxivmath/train_category}"
 CRAWL_ROOT="${CRAWL_ROOT:-../arxiv_papers_data}"
 LIMIT="${LIMIT:-200}"
 MIN_CITATIONS="${MIN_CITATIONS:-10}"
+POSTED_FROM_MONTH="${POSTED_FROM_MONTH:-}"
+POSTED_UNTIL_MONTH="${POSTED_UNTIL_MONTH:-}"
 
 PIXI=(pixi run --manifest-path "${REPO_ROOT}/pixi.toml")
 LIMIT_ARGS=(--limit "${LIMIT}")
@@ -27,6 +29,13 @@ PRIMARY_CATEGORY_ARGS=()
 for primary_category in "$@"; do
   PRIMARY_CATEGORY_ARGS+=(--primary-category "${primary_category}")
 done
+POSTED_MONTH_ARGS=()
+if [[ -n "${POSTED_FROM_MONTH}" ]]; then
+  POSTED_MONTH_ARGS+=(--from-month "${POSTED_FROM_MONTH}")
+fi
+if [[ -n "${POSTED_UNTIL_MONTH}" ]]; then
+  POSTED_MONTH_ARGS+=(--until-month "${POSTED_UNTIL_MONTH}")
+fi
 
 cd "${MATHARENA_ROOT}"
 
@@ -35,6 +44,7 @@ cd "${MATHARENA_ROOT}"
   --paper-root "${PAPER_ROOT}" \
   --min-citations "${MIN_CITATIONS}" \
   "${PRIMARY_CATEGORY_ARGS[@]}" \
+  "${POSTED_MONTH_ARGS[@]}" \
   "${LIMIT_ARGS[@]}"
 
 "${PIXI[@]}" python arxivmath/scripts/shared/create_queries.py \

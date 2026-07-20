@@ -188,6 +188,84 @@ def test_extract_from_crawl_supports_custom_min_citations(tmp_path):
     assert _paper_dir(paper_root, "2401.02002").exists()
 
 
+@pytest.mark.parametrize(
+    ("arxiv_id", "expected"),
+    [
+        ("2401.01234", "2024-01"),
+        ("2401.01234v2", "2024-01"),
+        ("arXiv:0704.0001", "2007-04"),
+        ("math/0301001", "2003-01"),
+        ("acc-phys/9609003", "1996-09"),
+        ("not-an-arxiv-id", None),
+        ("2413.01234", None),
+    ],
+)
+def test_posted_month_is_derived_from_modern_and_legacy_arxiv_ids(arxiv_id, expected):
+    from arxivmath.scripts.train.ingest_arxiv_crawl import _posted_month_from_arxiv_id
+
+    assert _posted_month_from_arxiv_id(arxiv_id) == expected
+
+
+def test_extract_from_crawl_filters_by_inclusive_posted_month_range(tmp_path):
+    from arxivmath.scripts.train.ingest_arxiv_crawl import extract_from_crawl
+
+    crawl_root = tmp_path / "crawl"
+    paper_root = tmp_path / "paper_root"
+    crawl_root.mkdir()
+    rows = []
+    for arxiv_id in ("2312.00001", "2401.00001", "2403.00001", "2404.00001", "invalid"):
+        rows.append(
+            {
+                "ext_arxiv": arxiv_id,
+                "primary_category": "math.AP",
+                "citationCount": 10,
+                "content_json": json.dumps({"text": f"Full text for {arxiv_id}"}),
+            }
+        )
+    _write_chunk(crawl_root / "chunk_001.parquet", rows)
+
+    summary = extract_from_crawl(
+        crawl_root,
+        paper_root,
+        primary_categories=["math.AP"],
+        posted_from_month="2024-01",
+        posted_until_month="2024-03",
+    )
+
+    assert summary.selected == 2
+    assert summary.written == 2
+    assert summary.skipped_outside_posted_month_range == 3
+    assert _paper_dir(paper_root, "2401.00001").exists()
+    assert _paper_dir(paper_root, "2403.00001").exists()
+    assert not _paper_dir(paper_root, "2312.00001").exists()
+    assert not _paper_dir(paper_root, "2404.00001").exists()
+
+
+@pytest.mark.parametrize(
+    ("posted_from_month", "posted_until_month", "message"),
+    [
+        ("2024-1", None, "expected YYYY-MM"),
+        (None, "2024-13", "expected YYYY-MM"),
+        ("2024-03", "2024-01", "must not be after"),
+    ],
+)
+def test_extract_from_crawl_validates_posted_month_range(
+    tmp_path,
+    posted_from_month,
+    posted_until_month,
+    message,
+):
+    from arxivmath.scripts.train.ingest_arxiv_crawl import extract_from_crawl
+
+    with pytest.raises(ValueError, match=message):
+        extract_from_crawl(
+            tmp_path / "crawl",
+            tmp_path / "paper_root",
+            posted_from_month=posted_from_month,
+            posted_until_month=posted_until_month,
+        )
+
+
 def test_selection_filters_stop_after_first_rejection():
     from arxivmath.scripts.train.ingest_arxiv_crawl import (
         ExtractionSummary,
@@ -478,6 +556,8 @@ def test_create_train_category_script_supports_multiple_categories_and_overrides
     env["PAPER_ROOT"] = "arxivmath/train_co_nt"
     env["LIMIT"] = "20"
     env["MIN_CITATIONS"] = "12"
+    env["POSTED_FROM_MONTH"] = "2020-01"
+    env["POSTED_UNTIL_MONTH"] = "2024-12"
     env["MODEL_CONFIG"] = "openai/gpt-54-high"
     env["FULLTEXT_REVIEW_MODEL_CONFIG"] = "anthropic/opus_47_high"
 
@@ -488,6 +568,7 @@ def test_create_train_category_script_supports_multiple_categories_and_overrides
     assert "--paper-root arxivmath/train_co_nt" in calls[0]
     assert "--primary-category math.CO --primary-category math.NT" in calls[0]
     assert "--min-citations 12" in calls[0]
+    assert "--from-month 2020-01 --until-month 2024-12" in calls[0]
     assert "--limit 20" in calls[0]
     assert "--model-config anthropic/opus_47_high" in calls[3]
     assert "--limit 20" in calls[3]

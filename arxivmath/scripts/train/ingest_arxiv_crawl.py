@@ -3,6 +3,7 @@ import argparse
 import json
 import math
 import os
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,6 +39,7 @@ class ExtractionSummary:
     skipped_missing_arxiv_id: int = 0
     skipped_low_citation: int = 0
     skipped_wrong_category: int = 0
+    skipped_outside_posted_month_range: int = 0
     skipped_missing_text: int = 0
 
 
@@ -194,13 +196,49 @@ def _meets_minimum_citations(row: dict[str, Any], min_citations: float) -> bool:
     return citation_count is not None and float(citation_count) >= min_citations
 
 
-def _selection_filters(primary_categories: set[str], min_citations: float) -> tuple[_SelectionFilter, ...]:
+def _validate_posted_month(value: str) -> str:
+    if not re.fullmatch(r"\d{4}-(?:0[1-9]|1[0-2])", value):
+        raise ValueError(f"invalid posted month {value!r}; expected YYYY-MM")
+    return value
+
+
+def _posted_month_from_arxiv_id(arxiv_id: str) -> str | None:
+    arxiv_id = arxiv_id.removeprefix("arXiv:")
+    match = re.fullmatch(r"(?:[^/]+/)?(\d{2})(\d{2})(?:\.\d{4,5}|\d{3})(?:v\d+)?", arxiv_id)
+    if match is None:
+        return None
+    short_year, month = (int(part) for part in match.groups())
+    if not 1 <= month <= 12:
+        return None
+    year = 1900 + short_year if short_year >= 91 else 2000 + short_year
+    return f"{year:04d}-{month:02d}"
+
+
+def _within_posted_month_range(
+    row: dict[str, Any],
+    posted_from_month: str | None,
+    posted_until_month: str | None,
+) -> bool:
+    posted_month = _posted_month_from_arxiv_id(_clean_string(row.get("ext_arxiv")))
+    if posted_month is None:
+        return False
+    if posted_from_month is not None and posted_month < posted_from_month:
+        return False
+    return posted_until_month is None or posted_month <= posted_until_month
+
+
+def _selection_filters(
+    primary_categories: set[str],
+    min_citations: float,
+    posted_from_month: str | None = None,
+    posted_until_month: str | None = None,
+) -> tuple[_SelectionFilter, ...]:
     """Build the ordered row filters used by the crawl ingester.
 
     Add future selection rules here, together with the parquet columns they
     require and the ExtractionSummary counter used for rejected rows.
     """
-    return (
+    filters = [
         _SelectionFilter(
             predicate=lambda row: _matches_primary_category(row, primary_categories),
             required_columns=("primary_category",),
@@ -211,7 +249,20 @@ def _selection_filters(primary_categories: set[str], min_citations: float) -> tu
             required_columns=("citationCount",),
             rejection_counter="skipped_low_citation",
         ),
-    )
+    ]
+    if posted_from_month is not None or posted_until_month is not None:
+        filters.append(
+            _SelectionFilter(
+                predicate=lambda row: _within_posted_month_range(
+                    row,
+                    posted_from_month,
+                    posted_until_month,
+                ),
+                required_columns=("ext_arxiv",),
+                rejection_counter="skipped_outside_posted_month_range",
+            )
+        )
+    return tuple(filters)
 
 
 def _passes_selection_filters(
@@ -235,11 +286,28 @@ def extract_from_crawl(
     limit: int | None = None,
     primary_categories: list[str] | tuple[str, ...] | set[str] | None = None,
     min_citations: float = 10,
+    posted_from_month: str | None = None,
+    posted_until_month: str | None = None,
 ) -> ExtractionSummary:
     crawl_root = Path(crawl_root)
     paper_root = Path(paper_root)
+    if posted_from_month is not None:
+        posted_from_month = _validate_posted_month(posted_from_month)
+    if posted_until_month is not None:
+        posted_until_month = _validate_posted_month(posted_until_month)
+    if (
+        posted_from_month is not None
+        and posted_until_month is not None
+        and posted_from_month > posted_until_month
+    ):
+        raise ValueError("posted_from_month must not be after posted_until_month")
     primary_category_set = set(primary_categories or DEFAULT_PRIMARY_CATEGORIES)
-    selection_filters = _selection_filters(primary_category_set, min_citations)
+    selection_filters = _selection_filters(
+        primary_category_set,
+        min_citations,
+        posted_from_month,
+        posted_until_month,
+    )
     summary = ExtractionSummary()
 
     for chunk_path in _chunk_paths(crawl_root):
@@ -292,6 +360,20 @@ def main() -> None:
         default=10,
         help="Minimum citationCount required for extraction.",
     )
+    parser.add_argument(
+        "--from-month",
+        dest="posted_from_month",
+        type=_validate_posted_month,
+        default=None,
+        help="Earliest initial posting month to include, in YYYY-MM format.",
+    )
+    parser.add_argument(
+        "--until-month",
+        dest="posted_until_month",
+        type=_validate_posted_month,
+        default=None,
+        help="Latest initial posting month to include, in YYYY-MM format.",
+    )
     args = parser.parse_args()
 
     categories = args.primary_categories or sorted(DEFAULT_PRIMARY_CATEGORIES)
@@ -301,14 +383,18 @@ def main() -> None:
         limit=args.limit,
         primary_categories=categories,
         min_citations=args.min_citations,
+        posted_from_month=args.posted_from_month,
+        posted_until_month=args.posted_until_month,
     )
+    posted_month_range = f"{args.posted_from_month or '*'}..{args.posted_until_month or '*'}"
     print(
         f"Extracted crawl papers for primary_categories={','.join(categories)} "
-        f"min_citations={args.min_citations}: "
+        f"min_citations={args.min_citations} posted_month_range={posted_month_range}: "
         f"inspected={summary.inspected}, selected={summary.selected}, written={summary.written}, "
         f"skipped_missing_arxiv_id={summary.skipped_missing_arxiv_id}, "
         f"skipped_wrong_category={summary.skipped_wrong_category}, "
         f"skipped_low_citation={summary.skipped_low_citation}, "
+        f"skipped_outside_posted_month_range={summary.skipped_outside_posted_month_range}, "
         f"skipped_missing_text={summary.skipped_missing_text}"
     )
 
