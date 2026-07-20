@@ -16,8 +16,8 @@ def _paper_dir(root: Path, paper_id: str) -> Path:
     return root / paper_id.replace("/", "_")
 
 
-def test_extract_co_nt_from_crawl_filters_and_writes_raw_paper_root(tmp_path):
-    from arxivmath.scripts.train.extract_co_nt_from_crawl import extract_from_crawl
+def test_ingest_arxiv_crawl_filters_and_writes_raw_paper_root(tmp_path):
+    from arxivmath.scripts.train.ingest_arxiv_crawl import extract_from_crawl
 
     crawl_root = tmp_path / "crawl"
     paper_root = tmp_path / "paper_root"
@@ -87,7 +87,7 @@ def test_extract_co_nt_from_crawl_filters_and_writes_raw_paper_root(tmp_path):
 
 
 def test_extract_from_crawl_accepts_requested_primary_categories(tmp_path):
-    from arxivmath.scripts.train.extract_co_nt_from_crawl import extract_from_crawl
+    from arxivmath.scripts.train.ingest_arxiv_crawl import extract_from_crawl
 
     crawl_root = tmp_path / "crawl"
     paper_root = tmp_path / "paper_root"
@@ -148,7 +148,7 @@ def test_extract_from_crawl_accepts_requested_primary_categories(tmp_path):
 
 
 def test_extract_from_crawl_supports_custom_min_citations(tmp_path):
-    from arxivmath.scripts.train.extract_co_nt_from_crawl import extract_from_crawl
+    from arxivmath.scripts.train.ingest_arxiv_crawl import extract_from_crawl
 
     crawl_root = tmp_path / "crawl"
     paper_root = tmp_path / "paper_root"
@@ -188,8 +188,8 @@ def test_extract_from_crawl_supports_custom_min_citations(tmp_path):
     assert _paper_dir(paper_root, "2401.02002").exists()
 
 
-def test_extract_co_nt_from_crawl_requires_full_text(tmp_path):
-    from arxivmath.scripts.train.extract_co_nt_from_crawl import extract_from_crawl
+def test_ingest_arxiv_crawl_requires_full_text(tmp_path):
+    from arxivmath.scripts.train.ingest_arxiv_crawl import extract_from_crawl
 
     crawl_root = tmp_path / "crawl"
     paper_root = tmp_path / "paper_root"
@@ -365,7 +365,7 @@ def test_create_train_category_script_passes_explicit_category_defaults(tmp_path
 
     calls = pixi_log.read_text(encoding="utf-8").splitlines()
     assert len(calls) == 4
-    assert "extract_co_nt_from_crawl.py" in calls[0]
+    assert "ingest_arxiv_crawl.py" in calls[0]
     assert "--paper-root arxivmath/train_math_ap" in calls[0]
     assert "--primary-category math.AP" in calls[0]
     assert "--min-citations 10" in calls[0]

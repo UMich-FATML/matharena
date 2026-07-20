@@ -30,7 +30,7 @@ done
 
 cd "${MATHARENA_ROOT}"
 
-"${PIXI[@]}" python arxivmath/scripts/train/extract_co_nt_from_crawl.py \
+"${PIXI[@]}" python arxivmath/scripts/train/ingest_arxiv_crawl.py \
   --crawl-root "${CRAWL_ROOT}" \
   --paper-root "${PAPER_ROOT}" \
   --min-citations "${MIN_CITATIONS}" \
