@@ -81,17 +81,19 @@ def test_codex_auth_streams_directly_and_takes_precedence_over_api_key(tmp_path,
 
     class FakeResponse:
         usage = {"input_tokens": 2, "output_tokens": 1}
-        output = [
-            SimpleNamespace(
-                type="message",
-                id="message-1",
-                content=[SimpleNamespace(type="output_text", text="ok")],
-            )
-        ]
+        output = []
 
         @staticmethod
         def model_dump():
             return {"id": "response-1"}
+
+    streamed_output = [
+        SimpleNamespace(
+            type="message",
+            id="message-1",
+            content=[SimpleNamespace(type="output_text", text="ok")],
+        )
+    ]
 
     class FakeStream:
         def __enter__(self):
@@ -99,6 +101,16 @@ def test_codex_auth_streams_directly_and_takes_precedence_over_api_key(tmp_path,
 
         def __exit__(self, *_args):
             return False
+
+        def __iter__(self):
+            return iter(
+                [
+                    SimpleNamespace(
+                        type="response.output_item.done",
+                        item=streamed_output[0],
+                    )
+                ]
+            )
 
         @staticmethod
         def get_final_response():

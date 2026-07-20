@@ -404,7 +404,19 @@ class APIClient:
         client = self._create_codex_client(auth)
         try:
             with client.responses.stream(**payload) as stream:
-                return stream.get_final_response()
+                streamed_output = []
+                for event in stream:
+                    if event.type == "response.output_item.done":
+                        streamed_output.append(event.item)
+                response = stream.get_final_response()
+                if not response.output and streamed_output:
+                    try:
+                        response_data = response.model_dump()
+                        response_data["output"] = [item.model_dump() for item in streamed_output]
+                        response = type(response).model_validate(response_data)
+                    except (AttributeError, TypeError, ValueError):
+                        response.output = streamed_output
+                return response
         finally:
             client.close()
 
