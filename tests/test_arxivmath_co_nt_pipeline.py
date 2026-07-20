@@ -432,7 +432,7 @@ def test_fulltext_review_local_source_errors_when_full_text_missing(tmp_path):
         fulltext_review.load_full_texts(paper_root, ["2401.00006"], source="local")
 
 
-def test_create_queries_local_full_text_source_injects_full_text(tmp_path, monkeypatch):
+def test_create_queries_fulltext_mode_injects_full_text(tmp_path, monkeypatch):
     from arxivmath.scripts.shared import create_queries
 
     paper_root = tmp_path / "paper_root"
@@ -470,8 +470,7 @@ def test_create_queries_local_full_text_source_injects_full_text(tmp_path, monke
             str(paper_root),
             "--prompt",
             str(prompt_path),
-            "--full-text-source",
-            "local",
+            "--fulltext",
         ],
     )
 
@@ -484,7 +483,7 @@ def test_create_queries_local_full_text_source_injects_full_text(tmp_path, monke
     assert "Full=Full paper body with theorem details.\n" in prompt
 
 
-def test_create_queries_local_full_text_source_errors_when_full_text_missing(tmp_path, monkeypatch):
+def test_create_queries_fulltext_mode_errors_when_full_text_missing(tmp_path, monkeypatch):
     from arxivmath.scripts.shared import create_queries
 
     paper_root = tmp_path / "paper_root"
@@ -518,10 +517,84 @@ def test_create_queries_local_full_text_source_errors_when_full_text_missing(tmp
             str(paper_root),
             "--prompt",
             str(prompt_path),
-            "--full-text-source",
-            "local",
+            "--fulltext",
         ],
     )
 
     with pytest.raises(FileNotFoundError, match="full_text.md"):
+        create_queries.main()
+
+
+@pytest.mark.parametrize(
+    ("mode_args", "expected_prompt"),
+    [
+        ([], "arxivmath/prompts/arxiv/query.md"),
+        (["--fulltext"], "arxivmath/prompts/arxiv/fulltext_query.md"),
+        (["--false"], "arxivmath/prompts/broken/false.md"),
+        (["--lean"], "arxivmath/prompts/lean/extract_lean_abstract.md"),
+    ],
+)
+def test_create_queries_modes_select_default_prompt(monkeypatch, mode_args, expected_prompt):
+    from arxivmath.scripts.shared import create_queries
+
+    loaded_prompts = []
+    monkeypatch.setattr(create_queries, "load_prompt_template", loaded_prompts.append)
+    monkeypatch.setattr(create_queries, "resolve_model_config_path", lambda path: path)
+    monkeypatch.setattr(create_queries, "load_model_config", lambda path: {"model": "fake-model"})
+    monkeypatch.setattr(create_queries, "APIClient", lambda **kwargs: object())
+    monkeypatch.setattr(create_queries, "list_paper_ids", lambda paper_root: [])
+    monkeypatch.setattr(sys, "argv", ["create_queries.py", "--model-config", "fake.yaml", *mode_args])
+
+    create_queries.main()
+
+    assert loaded_prompts == [expected_prompt]
+
+
+def test_create_queries_standard_mode_does_not_supply_full_text(monkeypatch):
+    from arxivmath.scripts.shared import create_queries
+
+    formatted_values = []
+
+    class RecordingTemplate:
+        def format(self, **values):
+            formatted_values.append(values)
+            return "formatted prompt"
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_queries(self, queries):
+            yield 0, [{"role": "assistant", "content": '{"keep": false}'}], {"cost": 0.0}
+
+    monkeypatch.setattr(create_queries, "load_prompt_template", lambda path: RecordingTemplate())
+    monkeypatch.setattr(create_queries, "resolve_model_config_path", lambda path: path)
+    monkeypatch.setattr(create_queries, "load_model_config", lambda path: {"model": "fake-model"})
+    monkeypatch.setattr(create_queries, "APIClient", FakeClient)
+    monkeypatch.setattr(create_queries, "list_paper_ids", lambda paper_root: ["2401.00009"])
+    monkeypatch.setattr(create_queries, "load_annotation", lambda *args: {})
+    monkeypatch.setattr(
+        create_queries,
+        "load_metadata",
+        lambda *args: {"title": " Title ", "abstract": " Abstract "},
+    )
+    monkeypatch.setattr(create_queries, "save_annotation", lambda *args: None)
+    monkeypatch.setattr(sys, "argv", ["create_queries.py", "--model-config", "fake.yaml"])
+
+    create_queries.main()
+
+    assert formatted_values == [{"title": "Title", "abstract": "Abstract"}]
+
+
+@pytest.mark.parametrize("other_mode", ["--false", "--lean"])
+def test_create_queries_fulltext_mode_is_mutually_exclusive(monkeypatch, other_mode):
+    from arxivmath.scripts.shared import create_queries
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["create_queries.py", "--model-config", "fake.yaml", "--fulltext", other_mode],
+    )
+
+    with pytest.raises(SystemExit, match="2"):
         create_queries.main()

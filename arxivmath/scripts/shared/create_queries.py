@@ -25,6 +25,8 @@ FINAL_ANNOTATION_FILENAME = "llm_annotation.json"
 FALSE_ANNOTATION_FILENAME = "llm_metadata_false.json"
 LEAN_ANNOTATION_FILENAME = "metadata_lean_abstract.json"
 LEAN_DEFAULT_PROMPT = "arxivmath/prompts/lean/extract_lean_abstract.md"
+ARXIV_DEFAULT_PROMPT = "arxivmath/prompts/arxiv/query.md"
+ARXIV_FULLTEXT_PROMPT = "arxivmath/prompts/arxiv/fulltext_query.md"
 ARXIV_NONEXCLUSIVE_LICENSE_URL = "http://arxiv.org/licenses/nonexclusive-distrib/1.0/"
 UNSAFE_ARXIV_ANSWER_RE = re.compile(
     r"\\(?:aleph|beth|cap|circ|cup|in|infty|land|lor|mathbb|mathcal|mathbf|mathrm|neg|oplus|operatorname|otimes|prod|sqcup|sum|text|tilde|vee|wedge)(?=[^A-Za-z]|$)|[\u222a\u2229\u2228\u2227\u2297\u2295\u221e\u00ac]"
@@ -147,15 +149,14 @@ def main():
     parser.add_argument("--prompt", default=None, help="Prompt template path.")
     parser.add_argument("--limit", type=int, default=None, help="Optional limit on number of papers to query.")
     parser.add_argument("--max-papers", type=int, default=None, help="Optional limit on paper ids to inspect.")
-    parser.add_argument(
-        "--full-text-source",
-        choices=["none", "local"],
-        default="none",
-        help="Optional source for {full_text} prompt injection. 'local' reads full_text.md from each paper directory.",
-    )
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("--false", action="store_true", help="Use the false-statement pipeline.")
     mode_group.add_argument("--lean", action="store_true", help="Use the Lean abstract-candidate pipeline.")
+    mode_group.add_argument(
+        "--fulltext",
+        action="store_true",
+        help="Generate questions from each paper's local full_text.md.",
+    )
     parser.add_argument("--annotation-filename", default=None, help="Annotation filename to read/write.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing annotations.")
     parser.add_argument(
@@ -168,9 +169,15 @@ def main():
     if args.lean:
         prompt_path = args.prompt or LEAN_DEFAULT_PROMPT
         annotation_filename = args.annotation_filename or LEAN_ANNOTATION_FILENAME
+    elif args.false:
+        prompt_path = args.prompt or "arxivmath/prompts/broken/false.md"
+        annotation_filename = args.annotation_filename or FALSE_ANNOTATION_FILENAME
+    elif args.fulltext:
+        prompt_path = args.prompt or ARXIV_FULLTEXT_PROMPT
+        annotation_filename = args.annotation_filename or FINAL_ANNOTATION_FILENAME
     else:
-        prompt_path = args.prompt or ("arxivmath/prompts/broken/false.md" if args.false else "arxivmath/prompts/arxiv/query.md")
-        annotation_filename = args.annotation_filename or (FALSE_ANNOTATION_FILENAME if args.false else FINAL_ANNOTATION_FILENAME)
+        prompt_path = args.prompt or ARXIV_DEFAULT_PROMPT
+        annotation_filename = args.annotation_filename or FINAL_ANNOTATION_FILENAME
     prompt_template = load_prompt_template(prompt_path)
     model_config_path = resolve_model_config_path(args.model_config)
     model_config = load_model_config(model_config_path)
@@ -194,14 +201,13 @@ def main():
         metadata = load_metadata(args.paper_root, paper_id)
         if should_skip_license(metadata, skip_arxiv_license=args.skip_arxiv_license):
             continue
-        full_text = ""
-        if args.full_text_source == "local":
-            full_text = load_local_full_text(args.paper_root, paper_id)
-        prompt = prompt_template.format(
-            title=(metadata.get("title") or "").strip(),
-            abstract=(metadata.get("abstract") or "").strip(),
-            full_text=full_text,
-        )
+        prompt_values = {
+            "title": (metadata.get("title") or "").strip(),
+            "abstract": (metadata.get("abstract") or "").strip(),
+        }
+        if args.fulltext:
+            prompt_values["full_text"] = load_local_full_text(args.paper_root, paper_id)
+        prompt = prompt_template.format(**prompt_values)
         queries.append([{"role": "user", "content": prompt}])
         query_paper_ids.append(paper_id)
         if args.limit and len(queries) >= args.limit:
