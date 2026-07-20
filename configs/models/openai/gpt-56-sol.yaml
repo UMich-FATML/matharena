@@ -1,0 +1,22 @@
+model: gpt-5.6-sol--medium
+api: openai
+codex_auth_token: ~/.codex/auth.json
+cache_read_cost: 0
+read_cost: 0
+write_cost: 0
+concurrent_requests: 6
+temperature: null
+top_p: null
+human_readable_id: GPT-5.6 SOL (medium, Codex auth)
+batch_processing: false
+background: false
+use_openai_responses_api: true
+store: false
+include:
+  - reasoning.encrypted_content
+date: "2026-07-20"
+reasoning:
+  summary: "auto"
+other_params:
+  open: false
+  creator: OpenAI

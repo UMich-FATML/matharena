@@ -244,16 +244,24 @@ def test_codex_auth_does_not_retry_or_fall_back_when_credentials_are_unchanged(t
     assert client.api_key is None
 
 
-def test_codex_model_config_is_safe_and_bounded():
+@pytest.mark.parametrize(
+    ("config_name", "reasoning_effort"),
+    [
+        ("gpt-56-sol-xhigh.yaml", "xhigh"),
+        ("gpt-56-sol.yaml", "medium"),
+    ],
+)
+def test_codex_model_config_is_safe_and_bounded(config_name, reasoning_effort):
     config_path = (
         Path(__file__).resolve().parents[1]
         / "configs"
         / "models"
         / "openai"
-        / "gpt-56-sol-xhigh.yaml"
+        / config_name
     )
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
+    assert config["model"] == f"gpt-5.6-sol--{reasoning_effort}"
     assert config["codex_auth_token"] == "~/.codex/auth.json"
     assert config["use_openai_responses_api"] is True
     assert config["batch_processing"] is False
