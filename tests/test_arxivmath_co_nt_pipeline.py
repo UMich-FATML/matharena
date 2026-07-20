@@ -382,6 +382,40 @@ def test_create_train_category_script_passes_explicit_category_defaults(tmp_path
     assert "--limit 200" in calls[3]
 
 
+def test_create_train_category_script_uses_codex_generation_and_anthropic_review_defaults(tmp_path):
+    matharena_root = Path(__file__).resolve().parents[1]
+    script_path = matharena_root / "arxivmath" / "scripts" / "create_train_category.sh"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    pixi_log = tmp_path / "pixi_calls.log"
+    fake_pixi = fake_bin / "pixi"
+    fake_pixi.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$PIXI_CALL_LOG"\n',
+        encoding="utf-8",
+    )
+    fake_pixi.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    env["PIXI_CALL_LOG"] = str(pixi_log)
+    env["PAPER_ROOT"] = "arxivmath/train_math_ap"
+    for name in (
+        "MODEL_CONFIG",
+        "CREATE_QUERIES_MODEL_CONFIG",
+        "VERIFY_QUERIES_MODEL_CONFIG",
+        "FULLTEXT_REVIEW_MODEL_CONFIG",
+    ):
+        env.pop(name, None)
+
+    subprocess.run(["bash", str(script_path), "math.AP"], cwd=matharena_root, env=env, check=True)
+
+    calls = pixi_log.read_text(encoding="utf-8").splitlines()
+    assert "--model-config openai/gpt-56-sol-xhigh" in calls[1]
+    assert "--model-config openai/gpt-56-sol-xhigh" in calls[2]
+    assert "--model-config anthropic/opus_47_high" in calls[3]
+
+
 def test_create_train_category_script_supports_multiple_categories_and_overrides(tmp_path):
     matharena_root = Path(__file__).resolve().parents[1]
     script_path = matharena_root / "arxivmath" / "scripts" / "create_train_category.sh"

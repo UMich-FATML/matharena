@@ -1,5 +1,7 @@
 """This module provides a unified API for querying various large language models."""
 
+import base64
+import binascii
 import inspect
 import json
 import os
@@ -7,7 +9,9 @@ import tempfile
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 import anthropic
 import requests
@@ -18,7 +22,7 @@ from anthropic.types.messages.batch_create_params import Request
 from anthropic.types.beta.message_create_params import MessageCreateParamsNonStreaming as BetaMessageCreateParamsNonStreaming
 from anthropic.types.beta.messages.batch_create_params import Request as BetaRequest
 from loguru import logger
-from openai import OpenAI, RateLimitError
+from openai import AuthenticationError, OpenAI, PermissionDeniedError, RateLimitError
 from together import Together
 from tqdm import tqdm
 from transformers import AutoTokenizer
@@ -30,6 +34,21 @@ try:
     from vllm import LLM, SamplingParams
 except ImportError:
     LLM = None
+
+
+CODEX_RESPONSES_BASE_URL = "https://chatgpt.com/backend-api/codex"
+CODEX_AUTH_CLAIM = "https://api.openai.com/auth"
+
+
+class CodexAuthenticationError(RuntimeError):
+    """An unrecoverable problem with Codex ChatGPT authentication."""
+
+
+@dataclass(frozen=True)
+class _CodexAuthSnapshot:
+    access_token: str
+    account_id: str
+    is_fedramp: bool
 
 
 class APIClient:
@@ -55,6 +74,7 @@ class APIClient:
         max_tokens=None,
         api="openai",
         api_key_env=None,
+        codex_auth_token=None,
         base_url=None,
         default_headers=None,
         max_retries=3,
@@ -89,6 +109,9 @@ class APIClient:
             timeout (int, optional): The timeout for API requests in seconds. Defaults to 9000.
             max_tokens (int, optional): The maximum number of tokens to generate. Defaults to None.
             api (str, optional): The API to use. Defaults to 'openai'.
+            codex_auth_token (str, optional): Path to a Codex ``auth.json`` file. When set,
+                authenticate directly to the Codex Responses backend instead of using
+                ``OPENAI_API_KEY``. Defaults to None.
             default_headers (dict, optional): Default headers to send with OpenAI-compatible clients.
             max_retries (int, optional): The maximum number of retries for a failed query. Defaults to 50.
             concurrent_requests (int, optional): The number of concurrent requests to make. Defaults to 30.
@@ -121,6 +144,16 @@ class APIClient:
             self.max_tool_calls_mode = "per_tool"
             if sum(max_tool_calls.values()) > 0:
                 self.tool_calls_allowed = True
+
+        codex_auth_path = self._validate_codex_configuration(
+            codex_auth_token=codex_auth_token,
+            api=api,
+            base_url=base_url,
+            background=background,
+            batch_processing=batch_processing,
+            use_openai_responses_api=use_openai_responses_api,
+            store=kwargs.get("store", False),
+        )
 
         # Adapt model name and other args to the model
         if "--" in model:
@@ -189,12 +222,17 @@ class APIClient:
 
         # Prep api
         self.api = api
+        self.codex_auth_token = codex_auth_path
         self.base_url = base_url
         self.default_headers = default_headers
         self.api_key_env = api_key_env
         self.api_key = None
         self.terminated = False
         self._initialize_api_keys()
+        if self.codex_auth_token is not None:
+            # Validate eagerly, but do not retain credentials. Each request reads a
+            # fresh snapshot so an external `codex login` can replace the token.
+            self._load_codex_auth()
 
         
         # VLLM-specific initialization
@@ -241,6 +279,149 @@ class APIClient:
                     logger.info(f"Removing {kwarg_to_remove} parameter for {model} model.")
                     del kwargs[kwarg_to_remove]
 
+    @staticmethod
+    def _validate_codex_configuration(
+        *, codex_auth_token, api, base_url, background, batch_processing, use_openai_responses_api, store
+    ):
+        """Validate and normalize the opt-in Codex backend configuration."""
+        if codex_auth_token is None:
+            return None
+        if not isinstance(codex_auth_token, (str, os.PathLike)) or not str(codex_auth_token).strip():
+            raise ValueError("codex_auth_token must be a non-empty path to a Codex auth.json file.")
+        if api != "openai":
+            raise ValueError("codex_auth_token is only supported when api is 'openai'.")
+        if not use_openai_responses_api:
+            raise ValueError("codex_auth_token requires use_openai_responses_api: true.")
+        if batch_processing:
+            raise ValueError("codex_auth_token does not support batch_processing: true.")
+        if background:
+            raise ValueError("codex_auth_token does not support background: true.")
+        if store:
+            raise ValueError("codex_auth_token requires store: false.")
+        if base_url is not None:
+            raise ValueError("codex_auth_token selects the Codex backend and cannot be combined with base_url.")
+        return Path(codex_auth_token).expanduser()
+
+    def _codex_auth_error(self, detail):
+        return CodexAuthenticationError(
+            f"Cannot use Codex authentication from {self.codex_auth_token}: {detail} "
+            "Run `codex login` and retry."
+        )
+
+    def _decode_codex_jwt(self, token, label):
+        """Decode JWT claims used for local routing metadata, without validating the signature."""
+        try:
+            parts = token.split(".")
+            if len(parts) != 3:
+                raise ValueError
+            payload = parts[1] + "=" * (-len(parts[1]) % 4)
+            claims = json.loads(base64.urlsafe_b64decode(payload).decode("utf-8"))
+            if not isinstance(claims, dict):
+                raise ValueError
+            return claims
+        except (binascii.Error, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+            raise self._codex_auth_error(f"the {label} is not a valid JWT") from None
+
+    def _load_codex_auth(self):
+        """Read and validate a read-only snapshot of Codex ChatGPT credentials."""
+        try:
+            with self.codex_auth_token.open("r", encoding="utf-8") as auth_file:
+                auth = json.load(auth_file)
+        except FileNotFoundError:
+            raise self._codex_auth_error("the file does not exist") from None
+        except PermissionError:
+            raise self._codex_auth_error("the file is not readable") from None
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            raise self._codex_auth_error("the file is not valid readable JSON") from None
+
+        if not isinstance(auth, dict) or auth.get("auth_mode") != "chatgpt":
+            raise self._codex_auth_error("auth_mode must be 'chatgpt'")
+        tokens = auth.get("tokens")
+        if not isinstance(tokens, dict):
+            raise self._codex_auth_error("the tokens object is missing")
+        access_token = tokens.get("access_token")
+        if not isinstance(access_token, str) or not access_token:
+            raise self._codex_auth_error("the access token is missing")
+
+        access_claims = self._decode_codex_jwt(access_token, "access token")
+        expires_at = access_claims.get("exp")
+        if not isinstance(expires_at, (int, float)):
+            raise self._codex_auth_error("the access token has no valid expiration")
+        if expires_at <= time.time():
+            raise self._codex_auth_error("the access token is expired")
+
+        id_claims = {}
+        id_token = tokens.get("id_token")
+        if isinstance(id_token, str) and id_token:
+            id_claims = self._decode_codex_jwt(id_token, "ID token")
+
+        account_id = tokens.get("account_id")
+        for claims in (id_claims, access_claims):
+            auth_claims = claims.get(CODEX_AUTH_CLAIM, {})
+            if not account_id and isinstance(auth_claims, dict):
+                account_id = auth_claims.get("chatgpt_account_id")
+        if not isinstance(account_id, str) or not account_id:
+            raise self._codex_auth_error("the ChatGPT account ID is missing")
+
+        id_auth_claims = id_claims.get(CODEX_AUTH_CLAIM, {})
+        is_fedramp = isinstance(id_auth_claims, dict) and id_auth_claims.get("chatgpt_account_is_fedramp") is True
+        return _CodexAuthSnapshot(
+            access_token=access_token,
+            account_id=account_id,
+            is_fedramp=is_fedramp,
+        )
+
+    def _create_codex_client(self, auth):
+        reserved_headers = {
+            "chatgpt-account-id",
+            "originator",
+            "x-openai-fedramp",
+            "x-openai-internal-codex-responses-lite",
+        }
+        headers = {
+            key: value
+            for key, value in (self.default_headers or {}).items()
+            if key.lower() not in reserved_headers
+        }
+        headers.update(
+            {
+                "ChatGPT-Account-ID": auth.account_id,
+                "originator": "codex_cli_rs",
+                "x-openai-internal-codex-responses-lite": "true",
+            }
+        )
+        if auth.is_fedramp:
+            headers["X-OpenAI-Fedramp"] = "true"
+        return OpenAI(
+            api_key=auth.access_token,
+            base_url=CODEX_RESPONSES_BASE_URL,
+            default_headers=headers,
+            timeout=self.timeout,
+            max_retries=0,
+        )
+
+    def _stream_codex_response_once(self, auth, payload):
+        client = self._create_codex_client(auth)
+        try:
+            with client.responses.stream(**payload) as stream:
+                return stream.get_final_response()
+        finally:
+            client.close()
+
+    def _stream_codex_response(self, payload):
+        """Stream one Codex response, retrying once if another process replaced the auth snapshot."""
+        auth = self._load_codex_auth()
+        try:
+            return self._stream_codex_response_once(auth, payload)
+        except (AuthenticationError, PermissionDeniedError):
+            refreshed_auth = self._load_codex_auth()
+            if refreshed_auth == auth:
+                raise self._codex_auth_error("the backend rejected the current credentials") from None
+            try:
+                return self._stream_codex_response_once(refreshed_auth, payload)
+            except (AuthenticationError, PermissionDeniedError):
+                raise self._codex_auth_error("the backend rejected the refreshed credentials") from None
+
     def _initialize_api_keys(self):
         """Initializes the API keys and base URLs for the selected API."""
         if self.api == "sri":
@@ -265,7 +446,8 @@ class APIClient:
             self.default_headers = {"cf-aig-metadata": metadata}
             self.api = "openai"
         elif self.api == "openai":
-            self.api_key = os.getenv("OPENAI_API_KEY")
+            if self.codex_auth_token is None:
+                self.api_key = os.getenv("OPENAI_API_KEY")
         elif self.api == "together":
             self.api_key = os.getenv("TOGETHER_API_KEY")
             self.base_url = "https://api.together.xyz/v1"
@@ -326,8 +508,8 @@ class APIClient:
         else:
             raise ValueError(f"API {self.api} not supported.")
 
-
-        assert self.api_key is not None, "API key not found."
+        if self.codex_auth_token is None:
+            assert self.api_key is not None, "API key not found."
 
     class InternalRequestResult:
         """A class to hold the result of a request internally (below run_queries)."""
@@ -1081,6 +1263,10 @@ class APIClient:
                 result.time = time.time() - start_time
                 time.sleep(self.sleep_after_request)
                 return result
+            except CodexAuthenticationError:
+                # Invalid ChatGPT credentials are configuration errors, not transient
+                # request failures. In particular, never fall back to OPENAI_API_KEY.
+                raise
             except Exception as e:
                 if "Max inner retries reached." in str(e):
                     total_retries += self.max_retries_inner
@@ -1476,6 +1662,9 @@ class APIClient:
         """
         if is_together:
             client = Together(timeout=self.timeout, max_retries=0)
+        elif self.codex_auth_token is not None:
+            # Codex credentials are loaded immediately before each streamed request.
+            client = None
         else:
             client = OpenAI(
                 api_key=self.api_key,
@@ -1543,13 +1732,34 @@ class APIClient:
                         "timeout": self.timeout,
                         **self.kwargs,
                     }
+                    if self.codex_auth_token is not None:
+                        # The ChatGPT Codex backend is streaming-only in this client and
+                        # must never retain response state server-side.
+                        payload["store"] = False
+                        codex_tools = payload.pop("tools", [])
+                        payload["input"] = [
+                            {
+                                "type": "additional_tools",
+                                "role": "developer",
+                                "tools": codex_tools,
+                            },
+                            *payload["input"],
+                        ]
+                        payload["tool_choice"] = "auto"
+                        payload["parallel_tool_calls"] = False
+                        reasoning = dict(payload.get("reasoning") or {})
+                        reasoning["context"] = "all_turns"
+                        payload["reasoning"] = reasoning
                     if self.background:
                         payload["background"] = self.background
                     ts = time.strftime("%m%d-%H:%M:%S", time.localtime(time.time()))
                     ts += f".{datetime.now().microsecond:06d}"
                     info = {"nb_executed_tool_calls": nb_executed_tool_calls, "n_retries": n_retries}
                     request_logger.log_request(ts=ts, batch_idx=idx, request=payload, **info)
-                    response = client.responses.create(**payload)
+                    if self.codex_auth_token is not None:
+                        response = self._stream_codex_response(payload)
+                    else:
+                        response = client.responses.create(**payload)
                     if self.background:
                         time_start = time.time()
                         while response.status in {"queued", "in_progress"}:
@@ -1564,6 +1774,9 @@ class APIClient:
                             raise ValueError("No usage info in response -> if in background, this mean exception occured.")
                     else:
                         request_logger.log_response(ts=ts, batch_idx=idx, response=response.model_dump())
+                except CodexAuthenticationError as e:
+                    request_logger.log_response(ts=ts, batch_idx=idx, exception={"exception": str(e)})
+                    raise
                 except Exception as e:
                     if "rate limit" not in str(e).lower() and "429" not in str(e):
                         total_retries += 1
