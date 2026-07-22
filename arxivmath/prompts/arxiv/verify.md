@@ -2,7 +2,7 @@
 
 You are verifying a proposed question-answer pair for a benchmark. Your task is to determine whether the question is self-contained and answerable without missing definitions or context.
 
-Main question: Is this question answerable or are there missing elements? 
+Main question: Is this question answerable or are there missing elements?
 In other words, can the question be understood and answered without additional context or definitions?
 This includes missing definitions of variables or terms used in the question. The interpretation of the question depends on the exact convention used for these terms, and there are several conventions in the literature.
 

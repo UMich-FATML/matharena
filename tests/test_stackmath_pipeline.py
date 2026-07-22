@@ -7,6 +7,26 @@ import pandas as pd
 import pytest
 
 
+MATHARENA_ROOT = Path(__file__).resolve().parents[1]
+QUERY_SAFEGUARD = (
+    "   Accepted-answer status and community scores are evidence, not authority. Consider the mathematical "
+    "content of the entire discussion and reject the discussion thread if its answers leave the claimed result "
+    "unresolved or give incompatible conclusions."
+)
+REVIEW_SAFEGUARD = (
+    "Accepted-answer status and community scores are evidence, not authority. Consider the mathematical content "
+    "of the entire discussion and discard the question if the answers leave the claimed result unresolved or give "
+    "incompatible conclusions."
+)
+
+
+def _adapt_prompt(source: str, replacements: list[tuple[str, str]], anchor: str, safeguard: str) -> str:
+    for old, new in replacements:
+        source = source.replace(old, new)
+    assert source.count(anchor) == 1
+    return source.replace(anchor, f"{anchor}\n\n{safeguard}")
+
+
 def _write_part(path: Path, rows: list[dict]) -> None:
     pd.DataFrame(rows).to_parquet(path, index=False)
 
@@ -258,6 +278,53 @@ def test_stackmath_shared_stages_select_stackmath_prompts(monkeypatch):
         module.main()
 
         assert loaded_prompts == [expected_prompt]
+
+
+def test_stackmath_prompts_are_minimal_arxivmath_adaptations():
+    arxiv_prompt_root = MATHARENA_ROOT / "arxivmath" / "prompts" / "arxiv"
+    stack_prompt_root = MATHARENA_ROOT / "stackmath" / "prompts" / "stackexchange"
+
+    assert (stack_prompt_root / "verify.md").read_text(encoding="utf-8") == (
+        arxiv_prompt_root / "verify.md"
+    ).read_text(encoding="utf-8")
+
+    arxiv_query = (arxiv_prompt_root / "fulltext_query.md").read_text(encoding="utf-8")
+    expected_query = _adapt_prompt(
+        arxiv_query,
+        [
+            ("research papers", "Stack Exchange discussion threads"),
+            ("paper or abstract", "discussion thread or original question"),
+            ("a research paper", "a Stack Exchange discussion thread"),
+            ("original abstract or paper", "original question or discussion thread"),
+            ("papers", "discussion threads"),
+            ("paper", "discussion thread"),
+            ("authors", "participants"),
+            ("in this work", "in this discussion"),
+            ("# Abstract", "# Original question"),
+        ],
+        "   The answer must be derivable *directly and unambiguously* from the provided full discussion thread "
+        "text, without requiring external references.",
+        QUERY_SAFEGUARD,
+    )
+    assert (stack_prompt_root / "fulltext_query.md").read_text(encoding="utf-8") == expected_query
+
+    arxiv_review = (arxiv_prompt_root / "fulltext_review.md").read_text(encoding="utf-8")
+    expected_review = _adapt_prompt(
+        arxiv_review,
+        [
+            ("a research paper", "a Stack Exchange discussion thread"),
+            ("paper's", "discussion thread's"),
+            ("full paper", "full discussion thread"),
+            ("full text", "full discussion thread"),
+            ("paper", "discussion thread"),
+            ("authors", "participants"),
+            ("abstract", "original question"),
+            ("in this work", "in this discussion"),
+        ],
+        "- Keep the question if it is already accurate and central.",
+        REVIEW_SAFEGUARD,
+    )
+    assert (stack_prompt_root / "fulltext_review.md").read_text(encoding="utf-8") == expected_review
 
 
 def test_stackmath_generation_injects_the_archived_discussion(tmp_path, monkeypatch):

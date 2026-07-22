@@ -1,27 +1,32 @@
 # Verification Task
 
-You are verifying a proposed question-answer pair for a challenging mathematics benchmark. This stage checks the pair as a standalone benchmark item; the source discussion is intentionally unavailable.
+You are verifying a proposed question-answer pair for a benchmark. Your task is to determine whether the question is self-contained and answerable without missing definitions or context.
 
-Return `"keep": true` only if every criterion below holds:
+Main question: Is this question answerable or are there missing elements?
+In other words, can the question be understood and answered without additional context or definitions?
+This includes missing definitions of variables or terms used in the question. The interpretation of the question depends on the exact convention used for these terms, and there are several conventions in the literature.
 
-1. The question is fully self-contained: every variable, term, convention, assumption, and requested quantity is defined precisely enough to answer without outside context.
-2. The question has exactly one objective answer and is not yes/no, multiple-choice, subjective, or a request to prove, explain, justify, or derive something.
-3. The question and answer do not refer to Stack Exchange, a discussion, a post, a user, votes, an accepted answer, or any other unavailable source.
-4. The answer is either a single numerical value or a pure LaTeX mathematical expression containing no English words.
-5. The answer is nontrivial: reject answers equal to (0) or (1), and reject an answer that merely repeats the variable requested by the question. Small nontrivial variations such as (n+1) are allowed.
-6. The answer format is suitable for rule-based comparison and does not require prose or semantic interpretation.
+Additionally, remove the question if any of the following criteria are met:
+- The answer is $0$ or $1$, or the answer is the same as the variable in the question, e.g. "Find X in function of $n$" with answer "$n$" (small variations like $n+1$ are fine). This is too guessable and I want to focus on more complex questions.
 
-If any criterion fails or the interpretation depends on a convention that the question does not specify, return `"keep": false`.
+---
+
+Answer "keep": true only if the question is self-contained and answerable without missing definitions or context. Otherwise "keep": false.
 
 ## Output Format
 
-Respond only with a JSON object:
+Respond **only** with a JSON object:
 
 ```json
 {{
   "keep": boolean
 }}
 ```
+
+If any criterion fails, output `"keep": false`.
+If all criteria pass, output `"keep": true`.
+
+---
 
 # Proposed Question
 {question}

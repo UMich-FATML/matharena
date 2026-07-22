@@ -2,11 +2,11 @@
 
 You are constructing evaluation questions for a benchmark on **advanced research-level mathematics**. The benchmark aims to measure whether LLMs are strong enough to rederive **precise mathematical results** from **research papers**, without access to the paper or abstract.
 
-You will be given a **full text** of a research paper. Your task is to determine whether **a central result** of the paper can be converted into a **single, precise, objectively verifiable mathematical question** with a **unique, deterministic answer**.
+You will be given the **full text** of a research paper. Your task is to determine whether **a central result** of the paper can be converted into a **single, precise, objectively verifiable mathematical question** with a **unique, deterministic answer**.
 
 If such a question can be formed, you must produce it along with its answer. Otherwise, you must reject the paper.
 The question must be a difficult research-level mathematics question that requires deep understanding to answer. The question should be interpretable and answerable without access to the original abstract or paper.
-Most papers will be rejected, as main research contributions can often not be converted to a question with a single, unambiguous answer.
+Many papers will be rejected, as main research contributions can often not be converted to a question with a single, unambiguous answer.
 
 ---
 
@@ -14,22 +14,22 @@ Most papers will be rejected, as main research contributions can often not be co
 
 A paper should be **kept** *only if all* of the following conditions are satisfied:
 
-1. **Direct derivability**  
+1. **Direct derivability**
    The answer must be derivable *directly and unambiguously* from the provided full paper text, without requiring external references.
 
-2. **Main contribution**  
+2. **Main contribution**
    The question must target a *primary theorem, result, or quantitative claim* of the paper, not background material, motivation, or related work.
 
-3. **Unambiguous and objective**  
+3. **Unambiguous and objective**
    The question must have exactly **one correct answer**, with no dependence on interpretation, conventions, or unstated assumptions.
 
-4. **Non-subjective**  
+4. **Non-subjective**
    The question must not involve opinions, qualitative judgments, or vague descriptors (e.g., "significant," "large," "efficient").
 
-5. **Answer format constraint**  
+5. **Answer format constraint**
    The answer must be **either**:
-   - a single numerical value, or  
-   - a pure LaTeX mathematical expression  
+   - a single numerical value, or
+   - a pure LaTeX mathematical expression
 
    The answer **must not contain any English words**, including within LaTeX (symbols and variables are allowed).
    Additionally, avoid logical expressions and inequalities. Focus on scalar functions, constants, closed-form formulas, finite sets, ordered tuples, or intervals.
@@ -44,21 +44,21 @@ A paper should be **kept** *only if all* of the following conditions are satisfi
 
    If the paper only supports this kind of answer, reject the paper. If possible, instead reformulate the question so the answer is a scalar closed-form expression that avoids the unsupported notation. For instance, you can ask the value of the sum of the first \(n\) terms, or the value of the product, or the value of the minimum/maximum, rather than asking for the full unevaluated sum/product/set-builder answer.
 
-6. **Question type restriction**  
+6. **Question type restriction**
    The question must **not** be:
-   - yes/no  
-   - multiple-choice  
-   - a request to prove or explain something  
+   - yes/no
+   - multiple-choice
+   - a request to prove or explain something
 
-7. **Machine-verifiable**  
+7. **Machine-verifiable**
    The answer must be suitable for **rule-based verification**, meaning it can be extracted and compared as a string or parsed LaTeX expression.
 
-8. **Self-contained**  
-   The question must be understandable *on its own*.  
-   - Do **not** reference the paper, authors, or phrases like "in this work."  
+8. **Self-contained**
+   The question must be understandable *on its own*.
+   - Do **not** reference the paper, authors, or phrases like "in this work."
    - All notation and quantities used must be explicitly defined in the question.
 
-9. **No paper references in the answer**  
+9. **No paper references in the answer**
    The answer must be a standalone mathematical object and must not refer to the paper, its results, or its statements.
 
 10. **Claim needs to be proven**
