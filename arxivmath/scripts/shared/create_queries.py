@@ -24,7 +24,9 @@ from matharena.utils import normalize_conversation
 FINAL_ANNOTATION_FILENAME = "llm_annotation.json"
 FALSE_ANNOTATION_FILENAME = "llm_metadata_false.json"
 LEAN_ANNOTATION_FILENAME = "metadata_lean_abstract.json"
+LEAN_FULLTEXT_ANNOTATION_FILENAME = "metadata_lean_fulltext.json"
 LEAN_DEFAULT_PROMPT = "arxivmath/prompts/lean/extract_lean_abstract.md"
+LEAN_FULLTEXT_DEFAULT_PROMPT = "arxivmath/prompts/lean/extract_lean_fulltext.md"
 ARXIV_DEFAULT_PROMPT = "arxivmath/prompts/arxiv/query.md"
 ARXIV_FULLTEXT_PROMPT = "arxivmath/prompts/arxiv/fulltext_query.md"
 ARXIV_NONEXCLUSIVE_LICENSE_URL = "http://arxiv.org/licenses/nonexclusive-distrib/1.0/"
@@ -35,7 +37,7 @@ ANSWER_NUMBER_RE = re.compile(r"(?<![A-Za-z])-?\d+(?![A-Za-z])")
 ANSWER_VARIABLE_RE = re.compile(r"(?<!\\)(?<![A-Za-z])([A-Za-z])(?![A-Za-z])")
 
 
-def needs_annotation(annotation, overwrite=False, false_mode=False, lean_mode=False):
+def needs_annotation(annotation, overwrite=False, false_mode=False, lean_mode=False, require_proof=False):
     if overwrite:
         return True
     if lean_mode:
@@ -43,6 +45,8 @@ def needs_annotation(annotation, overwrite=False, false_mode=False, lean_mode=Fa
         if keep is None:
             return True
         if keep is True and not annotation.get("statement"):
+            return True
+        if keep is True and require_proof and not annotation.get("proof"):
             return True
         return False
     if false_mode:
@@ -157,6 +161,11 @@ def main():
     mode_group.add_argument("--false", action="store_true", help="Use the false-statement pipeline.")
     mode_group.add_argument("--lean", action="store_true", help="Use the Lean abstract-candidate pipeline.")
     mode_group.add_argument(
+        "--lean-fulltext",
+        action="store_true",
+        help="Extract a Lean candidate and informal proof/context from each local full_text.md.",
+    )
+    mode_group.add_argument(
         "--fulltext",
         action="store_true",
         help="Generate questions from each paper's local full_text.md.",
@@ -170,7 +179,13 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.lean:
+    lean_mode = args.lean or args.lean_fulltext
+    fulltext_mode = args.fulltext or args.lean_fulltext
+
+    if args.lean_fulltext:
+        prompt_path = args.prompt or LEAN_FULLTEXT_DEFAULT_PROMPT
+        annotation_filename = args.annotation_filename or LEAN_FULLTEXT_ANNOTATION_FILENAME
+    elif args.lean:
         prompt_path = args.prompt or LEAN_DEFAULT_PROMPT
         annotation_filename = args.annotation_filename or LEAN_ANNOTATION_FILENAME
     elif args.false:
@@ -199,7 +214,8 @@ def main():
             annotation,
             overwrite=args.overwrite,
             false_mode=args.false,
-            lean_mode=args.lean,
+            lean_mode=lean_mode,
+            require_proof=args.lean_fulltext,
         ):
             continue
         metadata = load_metadata(args.paper_root, paper_id)
@@ -209,7 +225,7 @@ def main():
             "title": (metadata.get("title") or "").strip(),
             "abstract": (metadata.get("abstract") or "").strip(),
         }
-        if args.fulltext:
+        if fulltext_mode:
             prompt_values["full_text"] = load_local_full_text(args.paper_root, paper_id)
         prompt = prompt_template.format(**prompt_values)
         queries.append([{"role": "user", "content": prompt}])
@@ -235,21 +251,23 @@ def main():
             "raw": response,
             "cost": cost.get("cost", 0.0),
         }
-        if args.lean:
+        if lean_mode:
             annotation.update(
                 {
                     "title": metadata.get("title") or "",
                     "abstract": metadata.get("abstract") or "",
-                    "source_mode": "abstract",
+                    "source_mode": "fulltext" if args.lean_fulltext else "abstract",
                 }
             )
         keep_value = None
         if isinstance(parsed, dict):
             keep_value = coerce_bool(parsed.get("keep"))
             annotation["parsed"] = parsed
-            if args.lean:
+            if lean_mode:
                 if parsed.get("statement"):
                     annotation["statement"] = str(parsed["statement"]).strip()
+                if args.lean_fulltext and parsed.get("proof"):
+                    annotation["proof"] = str(parsed["proof"]).strip()
                 if parsed.get("rationale"):
                     annotation["rationale"] = str(parsed["rationale"]).strip()
             elif args.false:

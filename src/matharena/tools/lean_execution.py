@@ -1,7 +1,10 @@
 import asyncio
+import atexit
+from concurrent.futures import Future
 import json
 import logging
 import os
+import queue
 import re
 import subprocess
 import threading
@@ -10,12 +13,16 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from axle import AxleClient, CheckResponse
 from matharena.utils import normalize_conversation
 
 
 DEFAULT_LEAN_ENVIRONMENT = "lean-4.29.0"
 LOOGLE_DIR_ENV = "MATHARENA_LOOGLE_DIR"
+LOOGLE_INDEX_ENV = "MATHARENA_LOOGLE_INDEX_PATH"
+LEAN_PROJECT_ENV = "MATHARENA_LEAN_PROJECT_ROOT"
+LEAN_BACKEND_ENV = "MATHARENA_LEAN_BACKEND"
+LEAN_LSP_MCP_POOL_SIZE_ENV = "MATHARENA_LEAN_LSP_MCP_POOL_SIZE"
+LEAN_LSP_MCP_COMMAND_ENV = "MATHARENA_LEAN_LSP_MCP_COMMAND"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 COMPARATOR_BIN = REPO_ROOT / "external" / "comparator" / ".lake" / "build" / "bin" / "comparator"
 LEAN4EXPORT_BIN = REPO_ROOT / "external" / "lean4export" / ".lake" / "build" / "bin" / "lean4export"
@@ -26,6 +33,8 @@ COMPARATOR_AXIOMS = ["propext", "Quot.sound", "Classical.choice"]
 COMPARATOR_TIMEOUT_WARNING = "Comparator timed out; accepted based on Axle only."
 LOOGLE_PROCESS = None
 LEAN_EXPLORE_SERVICE = None
+LEAN_LSP_MCP_POOL = None
+LEAN_LSP_MCP_POOL_CONFIG = None
 LOOGLE_LOCK = threading.Lock()
 LEAN_EXPLORE_LOCK = threading.Lock()
 LEAN_CODE_BLOCK_RE = re.compile(r"```(?:lean)?\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
@@ -37,6 +46,8 @@ ADDED_TO_FILE_HEADER = "### Added To File ###"
 
 
 async def _check_with_axle(content, environment=DEFAULT_LEAN_ENVIRONMENT):
+    from axle import AxleClient
+
     content = "\n".join(line for line in content.splitlines() if not line.lstrip().startswith("import "))
     async with AxleClient() as client:
         return await client.check(content=content, environment=environment, ignore_imports=True, timeout_seconds=600)
@@ -80,6 +91,65 @@ def _loogle_dir():
     return Path(os.environ[LOOGLE_DIR_ENV]).expanduser().resolve()
 
 
+def _lean_project_dir():
+    path = os.getenv(LEAN_PROJECT_ENV)
+    if not path:
+        raise RuntimeError(f"Set {LEAN_PROJECT_ENV} to the shared Lean/Mathlib project.")
+    project = Path(path).expanduser().resolve()
+    if not (project / "lean-toolchain").is_file() or not (project / "lakefile.lean").is_file():
+        raise RuntimeError(f"{project} is not a Lean Lake project.")
+    return project
+
+
+class _RemoteEmbeddingClient:
+    def __init__(self, endpoint, model):
+        self.endpoint = endpoint
+        self.model = model
+
+    async def embed(self, texts, is_query=False):
+        def request():
+            import requests
+
+            response = requests.post(
+                self.endpoint,
+                json={"model": self.model, "input": texts},
+                timeout=120,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            embeddings = [item["embedding"] for item in sorted(payload["data"], key=lambda item: item["index"])]
+            return type("EmbeddingResponse", (), {"texts": texts, "embeddings": embeddings, "model": self.model})()
+
+        return await asyncio.to_thread(request)
+
+
+class _RemoteRerankerClient:
+    def __init__(self, endpoint, model):
+        self.endpoint = endpoint
+        self.model = model
+
+    async def rerank(self, query, documents, batch_size=None):
+        def request():
+            import requests
+
+            response = requests.post(
+                self.endpoint,
+                json={"model": self.model, "query": query, "documents": documents},
+                timeout=120,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if "scores" in payload:
+                scores = payload["scores"]
+            else:
+                scores = [0.0] * len(documents)
+                for item in payload.get("results", []):
+                    scores[item["index"]] = item.get("relevance_score", item.get("score", 0.0))
+            return type("RerankerResponse", (), {"query": query, "scores": scores, "model": self.model})()
+
+        return await asyncio.to_thread(request)
+
+
 def _get_lean_explore_service():
     global LEAN_EXPLORE_SERVICE
     if LEAN_EXPLORE_SERVICE is None:
@@ -87,8 +157,37 @@ def _get_lean_explore_service():
         logging.getLogger("lean_explore").setLevel(logging.ERROR)
         from lean_explore.search import SearchEngine, Service
 
-        LEAN_EXPLORE_SERVICE = Service(SearchEngine(use_local_data=False))
+        embedding_endpoint = os.getenv("MATHARENA_LEAN_EXPLORE_EMBEDDING_ENDPOINT")
+        reranker_endpoint = os.getenv("MATHARENA_LEAN_EXPLORE_RERANK_ENDPOINT")
+        engine_kwargs = {"use_local_data": False}
+        if embedding_endpoint:
+            engine_kwargs.update(
+                embedding_client=_RemoteEmbeddingClient(
+                    embedding_endpoint,
+                    os.getenv("MATHARENA_LEAN_EXPLORE_EMBEDDING_MODEL", "qwen/qwen3-embedding-0.6b"),
+                ),
+                embedding_model_name=os.getenv(
+                    "MATHARENA_LEAN_EXPLORE_EMBEDDING_MODEL", "qwen/qwen3-embedding-0.6b"
+                ),
+            )
+        if reranker_endpoint:
+            engine_kwargs.update(
+                reranker_client=_RemoteRerankerClient(
+                    reranker_endpoint,
+                    os.getenv("MATHARENA_LEAN_EXPLORE_RERANK_MODEL", "qwen/qwen3-reranker-0.6b"),
+                ),
+                reranker_model_name=os.getenv(
+                    "MATHARENA_LEAN_EXPLORE_RERANK_MODEL", "qwen/qwen3-reranker-0.6b"
+                ),
+            )
+        LEAN_EXPLORE_SERVICE = Service(SearchEngine(**engine_kwargs))
     return LEAN_EXPLORE_SERVICE
+
+
+@atexit.register
+def _close_lean_explore_service():
+    if LEAN_EXPLORE_SERVICE is not None:
+        _run_async(LEAN_EXPLORE_SERVICE.engine.engine.dispose())
 
 
 def _get_loogle_process():
@@ -96,8 +195,20 @@ def _get_loogle_process():
     loogle_bin = _loogle_bin()
     if LOOGLE_PROCESS is None or LOOGLE_PROCESS.poll() is not None:
         LOOGLE_PROCESS = subprocess.Popen(
-            [str(loogle_bin), "--json", "--interactive"],
-            cwd=_loogle_dir(),
+            [
+                "lake",
+                "env",
+                str(loogle_bin),
+                "--json",
+                "--interactive",
+                "--module",
+                "Mathlib",
+                "--index-mode",
+                "read",
+                "--index-file",
+                os.environ[LOOGLE_INDEX_ENV],
+            ],
+            cwd=_lean_project_dir(),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -130,6 +241,169 @@ def loogle(query, max_results=10):
         if hit.get("module"):
             lines.append(f"   from {hit['module']}")
     return "\n".join(lines)
+
+
+@atexit.register
+def _close_loogle_process():
+    if LOOGLE_PROCESS is not None and LOOGLE_PROCESS.poll() is None:
+        LOOGLE_PROCESS.terminate()
+
+
+def _mcp_result_payload(result):
+    structured = getattr(result, "structuredContent", None)
+    if isinstance(structured, dict):
+        return structured.get("result", structured)
+    for item in getattr(result, "content", []):
+        text = getattr(item, "text", "")
+        if not text:
+            continue
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload.get("result", payload)
+    raise RuntimeError("lean-lsp-mcp returned no structured lean_run_code result.")
+
+
+def _feedback_from_mcp_result(result):
+    if getattr(result, "isError", False):
+        detail = "; ".join(getattr(item, "text", str(item)) for item in getattr(result, "content", []))
+        raise RuntimeError(detail or "lean_run_code failed")
+    payload = _mcp_result_payload(result)
+    feedback = {"okay": bool(payload.get("success")), "errors": [], "warnings": [], "infos": []}
+    if payload.get("timed_out"):
+        feedback["errors"].append("Lean elaboration timed out.")
+        feedback["okay"] = False
+    for diagnostic in payload.get("diagnostics", []):
+        message = diagnostic.get("message", str(diagnostic)) if isinstance(diagnostic, dict) else str(diagnostic)
+        severity = diagnostic.get("severity", "info") if isinstance(diagnostic, dict) else "info"
+        key = "errors" if severity == "error" else "warnings" if severity == "warning" else "infos"
+        feedback[key].append(message)
+    return feedback
+
+
+class _LeanLspMcpWorker:
+    def __init__(self, project, command):
+        self.project = Path(project)
+        self.command = command
+        self.requests = queue.Queue()
+        self.ready = Future()
+        self.thread = threading.Thread(target=self._thread_main, daemon=True)
+        self.thread.start()
+        self.ready.result(timeout=120)
+
+    def _thread_main(self):
+        try:
+            asyncio.run(self._serve())
+        except BaseException as exc:
+            if not self.ready.done():
+                self.ready.set_exception(exc)
+            while True:
+                try:
+                    item = self.requests.get_nowait()
+                except queue.Empty:
+                    break
+                if item is not None:
+                    item[1].set_exception(exc)
+
+    async def _serve(self):
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+
+        params = StdioServerParameters(
+            command=self.command,
+            args=["--lean-project-path", str(self.project)],
+            cwd=self.project,
+            env=os.environ.copy(),
+        )
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                self.ready.set_result(True)
+                while True:
+                    try:
+                        item = self.requests.get_nowait()
+                    except queue.Empty:
+                        await asyncio.sleep(0.05)
+                        continue
+                    if item is None:
+                        return
+                    code, result_future = item
+                    try:
+                        result = await asyncio.wait_for(
+                            session.call_tool("lean_run_code", {"code": f"import Mathlib\n\n{code}"}),
+                            timeout=600,
+                        )
+                        result_future.set_result(_feedback_from_mcp_result(result))
+                    except BaseException as exc:
+                        result_future.set_exception(exc)
+
+    def check(self, code):
+        if not self.thread.is_alive():
+            raise RuntimeError("lean-lsp-mcp worker exited")
+        result = Future()
+        self.requests.put((code, result))
+        return result.result(timeout=660)
+
+    def close(self):
+        self.requests.put(None)
+        if self.thread.is_alive():
+            self.thread.join(timeout=10)
+
+
+class _LeanLspMcpPool:
+    def __init__(self, project, size, command):
+        self.project = project
+        self.command = command
+        self.workers = [None] * size
+        self.available = queue.Queue()
+        for index in range(size):
+            self.available.put(index)
+
+    def check(self, code):
+        index = self.available.get()
+        try:
+            for attempt in range(2):
+                try:
+                    if self.workers[index] is None:
+                        self.workers[index] = _LeanLspMcpWorker(self.project, self.command)
+                    return self.workers[index].check(code)
+                except Exception:
+                    if self.workers[index] is not None:
+                        self.workers[index].close()
+                    self.workers[index] = None
+                    if attempt == 1:
+                        raise
+        finally:
+            self.available.put(index)
+
+    def close(self):
+        for worker in self.workers:
+            if worker is not None:
+                worker.close()
+
+
+def _get_lean_lsp_mcp_pool():
+    global LEAN_LSP_MCP_POOL, LEAN_LSP_MCP_POOL_CONFIG
+    project = _lean_project_dir()
+    size = int(os.getenv(LEAN_LSP_MCP_POOL_SIZE_ENV, "4"))
+    if size < 1:
+        raise RuntimeError(f"{LEAN_LSP_MCP_POOL_SIZE_ENV} must be positive.")
+    command = os.getenv(LEAN_LSP_MCP_COMMAND_ENV, "lean-lsp-mcp")
+    config = (project, size, command)
+    if LEAN_LSP_MCP_POOL is None or config != LEAN_LSP_MCP_POOL_CONFIG:
+        if LEAN_LSP_MCP_POOL is not None:
+            LEAN_LSP_MCP_POOL.close()
+        LEAN_LSP_MCP_POOL = _LeanLspMcpPool(project, size, command)
+        LEAN_LSP_MCP_POOL_CONFIG = config
+    return LEAN_LSP_MCP_POOL
+
+
+@atexit.register
+def _close_lean_lsp_mcp_pool():
+    if LEAN_LSP_MCP_POOL is not None:
+        LEAN_LSP_MCP_POOL.close()
 
 
 def lean_explore_search(query, max_results=10):
@@ -169,6 +443,26 @@ def lean_explore_search(query, max_results=10):
 
 
 def get_lean_feedback_dict(statement, environment=DEFAULT_LEAN_ENVIRONMENT):
+    backend = os.getenv(LEAN_BACKEND_ENV, "axle").strip().lower()
+    if backend == "lean-lsp-mcp":
+        try:
+            return _get_lean_lsp_mcp_pool().check(statement)
+        except Exception as exc:
+            return {
+                "okay": False,
+                "errors": [f"lean-lsp-mcp failed after one worker restart: {exc}"],
+                "warnings": [],
+                "infos": [],
+            }
+    if backend != "axle":
+        return {
+            "okay": False,
+            "errors": [f"Unsupported {LEAN_BACKEND_ENV} value: {backend}"],
+            "warnings": [],
+            "infos": [],
+        }
+
+    result = None
     retry = 0
     while retry < 5:
         try:
@@ -178,7 +472,7 @@ def get_lean_feedback_dict(statement, environment=DEFAULT_LEAN_ENVIRONMENT):
             print(f"Error checking with Axle: {exc}. Retrying...")
             retry += 1
             time.sleep(60)
-    if retry == 5 or not isinstance(result, CheckResponse):
+    if retry == 5 or result is None or not hasattr(result, "lean_messages"):
         return {
             "okay": False,
             "errors": ["Failed to get feedback from Axle after 5 retries."],
@@ -197,13 +491,16 @@ def get_lean_feedback_dict(statement, environment=DEFAULT_LEAN_ENVIRONMENT):
     return feedback
 
 
-def _format_feedback(feedback):
+def format_lean_feedback(feedback):
     valid = feedback["okay"] and not feedback["errors"]
     parts = [f"### Compiles ###\n{feedback['okay']}", f"### Valid Proof ###\n{valid}"]
     for key in ["errors", "warnings", "infos"]:
         part = f"""### {key.capitalize()} ###\n""" + "\n".join(feedback[key])
         parts.append(part)
     return "\n\n".join(parts)
+
+
+_format_feedback = format_lean_feedback
 
 
 def _add_to_file_succeeded(content):

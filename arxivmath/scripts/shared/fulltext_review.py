@@ -52,11 +52,37 @@ def load_full_texts(paper_root, paper_ids, source="ocr", redo=False):
     return full_texts
 
 
-def should_review(annotation, overwrite=False, key="full_text_review", lean_mode=False):
+def coerce_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+        return value.strip().lower() == "true"
+    return None
+
+
+def has_explicit_decision(record, key):
+    if not isinstance(record, dict):
+        return False
+    parsed = record.get("parsed")
+    if not isinstance(parsed, dict):
+        return False
+    if key == "solid_authors":
+        return coerce_bool(parsed.get("keep")) is not None
+    return str(parsed.get("action", "")).strip().lower() in {"keep", "discard"}
+
+
+def should_review(
+    annotation,
+    overwrite=False,
+    key="full_text_review",
+    lean_mode=False,
+    require_explicit_decision=False,
+):
     if annotation.get("keep") is not True:
         return False
     if not overwrite and key in annotation:
-        return False
+        if not require_explicit_decision or has_explicit_decision(annotation.get(key), key):
+            return False
     review = annotation.get("review") or {}
     if lean_mode:
         return not review or review.get("status") == "keep"
@@ -88,6 +114,11 @@ def main():
     mode_group.add_argument("--false", action="store_true", help="Use the false-statement pipeline.")
     mode_group.add_argument("--lean", action="store_true", help="Use the Lean abstract-candidate pipeline.")
     parser.add_argument("--annotation-filename", default=None, help="Annotation filename to read/write.")
+    parser.add_argument(
+        "--require-explicit-decision",
+        action="store_true",
+        help="Retry malformed outputs and mutate keep only after an explicit keep/discard decision.",
+    )
     args = parser.parse_args()
 
     prompt_path = args.prompt or (
@@ -118,6 +149,7 @@ def main():
     discarded = []
     updated = []
     kept = []
+    malformed = []
     total_cost = 0.0
 
     paper_ids = list_paper_ids(args.paper_root)
@@ -131,6 +163,7 @@ def main():
             overwrite=args.overwrite,
             key=args.key,
             lean_mode=args.lean,
+            require_explicit_decision=args.require_explicit_decision,
         ):
             review_ids.append(paper_id)
 
@@ -241,12 +274,12 @@ def main():
         action = None
         keep_value = None
         if isinstance(parsed, dict):
-            action = parsed.get("action")
+            action = str(parsed.get("action", "")).strip().lower() or None
             edited_question = parsed.get("question")
             edited_original = parsed.get("original_statement")
             edited_perturbed = parsed.get("perturbed_statement")
             edited_falsity = parsed.get("falsity_explanation")
-            keep_value = parsed.get("keep", True)
+            keep_value = coerce_bool(parsed.get("keep"))
 
         review_record = {
             "model": model_name,
@@ -260,6 +293,14 @@ def main():
                 review_record["rationale"] = parsed.get("rationale")
         if action:
             review_record["action"] = action
+
+        explicit_decision = has_explicit_decision(review_record, args.key)
+        if args.require_explicit_decision and not explicit_decision:
+            annotation[args.key] = review_record
+            save_annotation(args.paper_root, paper_id, annotation, annotation_filename)
+            total_cost += review_record["cost"]
+            malformed.append(paper_id)
+            continue
 
         review = annotation.get("review") or {}
         if action == "discard" or (action is None and '"action": "discard"' in response) or keep_value is False:
@@ -314,6 +355,7 @@ def main():
     print(f"Discarded ({len(discarded)}): {', '.join(discarded)}")
     print(f"Updated ({len(updated)}): {', '.join(updated)}")
     print(f"Kept ({len(kept)}): {', '.join(kept)}")
+    print(f"Malformed and left pending ({len(malformed)}): {', '.join(malformed)}")
 
 
 if __name__ == "__main__":

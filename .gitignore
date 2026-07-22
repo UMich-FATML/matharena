@@ -46,4 +46,5 @@ scripts/curation/*.sh
 scripts/extraction/timeline.py
 mds
 logs/
+external/
 scripts/euler/

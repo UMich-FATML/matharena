@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 from matharena.api_client import APIClient
 from matharena.arxivbench_utils import (
@@ -12,19 +12,37 @@ from matharena.arxivbench_utils import (
     resolve_model_config_path,
     save_annotation,
 )
-from matharena.tools.lean_execution import compiles_with_sorries, lean_explore_search, loogle, verify_lean
+from matharena.tools.lean_execution import (
+    format_lean_feedback,
+    get_lean_feedback_dict,
+    lean_explore_search,
+    loogle,
+    verify_lean,
+)
 from matharena.utils import normalize_conversation
-import os
 
 
 ANNOTATION_FILENAME = "metadata_lean_abstract.json"
 DEFAULT_PROMPT = "arxivmath/prompts/lean/formalize.md"
 LEAN_CODE_BLOCK_RE = re.compile(r"```(?:lean)?\s*(.*?)```", re.DOTALL)
+LEAN_DECL_RE = re.compile(
+    r"(?m)^\s*(theorem|lemma|def|definition|abbrev|opaque|axiom|constant|instance|example|inductive|structure|class)\b"
+)
+STATEMENT_ONLY_RE = re.compile(r"\A\s*theorem\b[\s\S]*:=\s*by\s+sorry\s*\Z")
 
-if not os.getenv("MATHARENA_LOOGLE_DIR"):
-    raise EnvironmentError("MATHARENA_LOOGLE_DIR not set, loogle tool will not work. Set it to enable Lean code search with loogle.")
-if not os.getenv("MATHARENA_LEAN_EXPLORE_DIR"):
-    raise EnvironmentError("MATHARENA_LEAN_EXPLORE_DIR not set, leanfinder tool will not work. Set it to enable Lean code search with LeanExplore.")
+
+def validate_statement_only(code):
+    """Return structural errors for the statement-only training-label contract."""
+    code = (code or "").strip()
+    errors = []
+    declarations = LEAN_DECL_RE.findall(code)
+    if declarations != ["theorem"]:
+        errors.append("Output must contain exactly one theorem declaration and no other declarations.")
+    if re.search(r"(?m)^\s*import\b", code):
+        errors.append("Output must not contain imports.")
+    if len(re.findall(r"\bsorry\b", code)) != 1 or not STATEMENT_ONLY_RE.fullmatch(code):
+        errors.append("The theorem must end exactly with `:= by sorry` and contain no proof or surrounding commands.")
+    return errors
 
 def needs_formalization(annotation, overwrite=False):
     if annotation.get("keep") is not True:
@@ -117,7 +135,12 @@ def main():
     parser.add_argument("--limit", type=int, default=None, help="Optional limit on number of papers to query.")
     parser.add_argument("--max-papers", type=int, default=None, help="Optional limit on paper ids to inspect.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing formalizations.")
-    parser.add_argument("--max-tool-calls", type=int, default=8, help="Maximum number of Lean tool calls per paper.")
+    parser.add_argument(
+        "--max-tool-calls",
+        type=int,
+        default=24,
+        help="Shared maximum number of calls across verify_lean, loogle, and leanfinder per paper.",
+    )
     args = parser.parse_args()
 
     prompt_template = load_prompt_template(args.prompt)
@@ -125,11 +148,7 @@ def main():
     model_name = model_config["model"]
     client_args = model_config.copy()
     client_args["tools"] = build_tool_specs()
-    client_args["max_tool_calls"] = {
-        "verify_lean": args.max_tool_calls,
-        "loogle": args.max_tool_calls,
-        "leanfinder": args.max_tool_calls,
-    }
+    client_args["max_tool_calls"] = args.max_tool_calls
     client = APIClient(**client_args)
 
     paper_ids = list_paper_ids(args.paper_root)
@@ -142,7 +161,10 @@ def main():
         annotation = load_annotation(args.paper_root, paper_id, args.annotation_filename)
         if not needs_formalization(annotation, overwrite=args.overwrite):
             continue
-        prompt = prompt_template.format(statement=annotation.get("statement", "").strip())
+        prompt = prompt_template.format(
+            statement=annotation.get("statement", "").strip(),
+            proof=annotation.get("proof", "").strip(),
+        )
         queries.append([{"role": "user", "content": prompt}])
         query_paper_ids.append(paper_id)
         if args.limit and len(queries) >= args.limit:
@@ -164,18 +186,27 @@ def main():
             response = conversation[-1].get("content", "") or ""
 
         candidate = extract_lean_code(response)
-        compile_feedback = ""
-        compiles = False
-        if candidate:
-            compile_feedback = verify_lean(candidate)
-            compiles = compiles_with_sorries(candidate)
+        structural_errors = validate_statement_only(candidate)
+        if candidate and not structural_errors:
+            compilation = get_lean_feedback_dict(candidate)
+        else:
+            compilation = {
+                "okay": False,
+                "errors": structural_errors or ["No Lean theorem statement was returned."],
+                "warnings": [],
+                "infos": [],
+            }
+        compilation["structural_errors"] = structural_errors
+        compile_feedback = format_lean_feedback(compilation)
+        compiles = compilation["okay"] and not compilation["errors"]
 
         annotation["formalization_model"] = model_name
         annotation["formalization_raw"] = response
         annotation["formalized_statement"] = candidate
         annotation["formalization_feedback"] = compile_feedback
+        annotation["formalization_compilation"] = compilation
         annotation["formalization_cost"] = cost.get("cost", 0.0)
-        annotation["formalization_updated_at"] = datetime.utcnow().isoformat() + "Z"
+        annotation["formalization_updated_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
         if compiles:
             annotation["keep"] = True

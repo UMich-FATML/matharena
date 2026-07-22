@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import os
 from datetime import datetime
 
 from dotenv import find_dotenv, load_dotenv
@@ -23,7 +24,9 @@ from matharena.utils import normalize_conversation
 FINAL_ANNOTATION_FILENAME = "llm_annotation.json"
 FALSE_ANNOTATION_FILENAME = "llm_metadata_false.json"
 LEAN_ANNOTATION_FILENAME = "metadata_lean_abstract.json"
+LEAN_FULLTEXT_ANNOTATION_FILENAME = "metadata_lean_fulltext.json"
 LEAN_DEFAULT_PROMPT = "arxivmath/prompts/lean/verify_lean_abstract.md"
+LEAN_FULLTEXT_DEFAULT_PROMPT = "arxivmath/prompts/lean/verify_lean_fulltext.md"
 
 
 def default_verification_key(semantic_judge=False):
@@ -65,7 +68,7 @@ def needs_verification(
     return True
 
 
-def render_prompt(template, annotation, false_mode=False, lean_mode=False, semantic_judge=False):
+def render_prompt(template, annotation, false_mode=False, lean_mode=False, semantic_judge=False, full_text=""):
     if semantic_judge:
         natural_statement, lean_code = get_latest_fields(annotation, ["statement", "formalized_statement"]) or ("", "")
         return template.format(natural_statement=natural_statement, lean_code=lean_code)
@@ -75,6 +78,8 @@ def render_prompt(template, annotation, false_mode=False, lean_mode=False, seman
             title=(metadata.get("title") or "").strip(),
             abstract=(metadata.get("abstract") or "").strip(),
             statement=(annotation.get("statement") or "").strip(),
+            proof=(annotation.get("proof") or "").strip(),
+            full_text=full_text,
         )
     if false_mode:
         original_statement, perturbed_statement, falsity_explanation = get_latest_fields(
@@ -112,15 +117,26 @@ def main():
     parser.add_argument("--max-papers", type=int, default=None, help="Optional limit on paper ids to inspect.")
     parser.add_argument("--false", action="store_true", help="Use the false-statement pipeline.")
     parser.add_argument("--lean", action="store_true", help="Use the Lean-candidate pipeline.")
+    parser.add_argument(
+        "--lean-fulltext",
+        action="store_true",
+        help="Verify a candidate against the local full_text.md and extracted proof/context.",
+    )
     parser.add_argument("--semantic-judge", action="store_true", help="Judge whether Lean code faithfully formalizes the natural-language statement.")
     parser.add_argument("--annotation-filename", default=None, help="Annotation filename to read/write.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing verification results.")
     parser.add_argument("--key", default=None, help="Annotation key to store the verification under.")
     args = parser.parse_args()
 
+    if args.lean and args.lean_fulltext:
+        parser.error("--lean and --lean-fulltext are mutually exclusive")
+    lean_mode = args.lean or args.lean_fulltext
+
     prompt_path = args.prompt or (
         "arxivmath/prompts/lean/semantic_judge.md"
         if args.semantic_judge
+        else LEAN_FULLTEXT_DEFAULT_PROMPT
+        if args.lean_fulltext
         else LEAN_DEFAULT_PROMPT
         if args.lean
         else "arxivmath/prompts/broken/verify_false.md"
@@ -128,7 +144,9 @@ def main():
         else "arxivmath/prompts/arxiv/verify.md"
     )
     annotation_filename = args.annotation_filename or (
-        LEAN_ANNOTATION_FILENAME
+        LEAN_FULLTEXT_ANNOTATION_FILENAME
+        if args.lean_fulltext
+        else LEAN_ANNOTATION_FILENAME
         if args.semantic_judge or args.lean
         else FALSE_ANNOTATION_FILENAME
         if args.false
@@ -152,19 +170,27 @@ def main():
             annotation,
             overwrite=args.overwrite,
             false_mode=args.false,
-            lean_mode=args.lean,
+            lean_mode=lean_mode,
             semantic_judge=args.semantic_judge,
             key=verification_key,
         ):
             continue
-        if args.lean:
+        full_text = ""
+        if lean_mode:
             annotation["_metadata"] = load_metadata(args.paper_root, paper_id)
+        if args.lean_fulltext:
+            full_text_path = os.path.join(args.paper_root, paper_id, "full_text.md")
+            if not os.path.isfile(full_text_path):
+                raise FileNotFoundError(f"Missing local full_text.md for verification: {full_text_path}")
+            with open(full_text_path, "r", encoding="utf-8") as f:
+                full_text = f.read()
         prompt = render_prompt(
             prompt_template,
             annotation,
             false_mode=args.false,
-            lean_mode=args.lean,
+            lean_mode=lean_mode,
             semantic_judge=args.semantic_judge,
+            full_text=full_text,
         )
         queries.append([{"role": "user", "content": prompt}])
         query_paper_ids.append(paper_id)
@@ -195,13 +221,13 @@ def main():
         if isinstance(parsed, dict):
             keep_value = coerce_bool(parsed.get("keep"))
             verification["parsed"] = parsed
-            if args.lean and keep_value is not None:
+            if lean_mode and keep_value is not None:
                 verification["keep"] = keep_value
         if keep_value is not None:
             if "keep_original" not in annotation:
                 annotation["keep_original"] = annotation.get("keep")
             annotation["keep"] = keep_value
-            if not args.lean:
+            if not lean_mode:
                 verification["keep"] = keep_value
             if keep_value:
                 kept_ids.append(paper_id)
