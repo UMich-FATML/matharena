@@ -18,6 +18,10 @@ REVIEW_SAFEGUARD = (
     "of the entire discussion and discard the question if the answers leave the claimed result unresolved or give "
     "incompatible conclusions."
 )
+QUERY_OMISSION = (
+    "Many discussion threads will be rejected, as main research contributions can often not be converted to a "
+    "question with a single, unambiguous answer.\n"
+)
 
 
 def _adapt_prompt(source: str, replacements: list[tuple[str, str]], anchor: str, safeguard: str) -> str:
@@ -25,6 +29,11 @@ def _adapt_prompt(source: str, replacements: list[tuple[str, str]], anchor: str,
         source = source.replace(old, new)
     assert source.count(anchor) == 1
     return source.replace(anchor, f"{anchor}\n\n{safeguard}")
+
+
+def _remove_unique_text(source: str, text: str) -> str:
+    assert source.count(text) == 1
+    return source.replace(text, "", 1)
 
 
 def _write_part(path: Path, rows: list[dict]) -> None:
@@ -289,22 +298,25 @@ def test_stackmath_prompts_are_minimal_arxivmath_adaptations():
     ).read_text(encoding="utf-8")
 
     arxiv_query = (arxiv_prompt_root / "fulltext_query.md").read_text(encoding="utf-8")
-    expected_query = _adapt_prompt(
-        arxiv_query,
-        [
-            ("research papers", "Stack Exchange discussion threads"),
-            ("paper or abstract", "discussion thread or original question"),
-            ("a research paper", "a Stack Exchange discussion thread"),
-            ("original abstract or paper", "original question or discussion thread"),
-            ("papers", "discussion threads"),
-            ("paper", "discussion thread"),
-            ("authors", "participants"),
-            ("in this work", "in this discussion"),
-            ("# Abstract", "# Original question"),
-        ],
-        "   The answer must be derivable *directly and unambiguously* from the provided full discussion thread "
-        "text, without requiring external references.",
-        QUERY_SAFEGUARD,
+    expected_query = _remove_unique_text(
+        _adapt_prompt(
+            arxiv_query,
+            [
+                ("research papers", "Stack Exchange discussion threads"),
+                ("paper or abstract", "discussion thread or original question"),
+                ("a research paper", "a Stack Exchange discussion thread"),
+                ("original abstract or paper", "original question or discussion thread"),
+                ("papers", "discussion threads"),
+                ("paper", "discussion thread"),
+                ("authors", "participants"),
+                ("in this work", "in this discussion"),
+                ("# Abstract", "# Original question"),
+            ],
+            "   The answer must be derivable *directly and unambiguously* from the provided full discussion thread "
+            "text, without requiring external references.",
+            QUERY_SAFEGUARD,
+        ),
+        QUERY_OMISSION,
     )
     assert (stack_prompt_root / "fulltext_query.md").read_text(encoding="utf-8") == expected_query
 

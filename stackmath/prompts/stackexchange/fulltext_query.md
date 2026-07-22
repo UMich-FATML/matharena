@@ -6,7 +6,6 @@ You will be given the **full text** of a Stack Exchange discussion thread. Your 
 
 If such a question can be formed, you must produce it along with its answer. Otherwise, you must reject the discussion thread.
 The question must be a difficult research-level mathematics question that requires deep understanding to answer. The question should be interpretable and answerable without access to the original question or discussion thread.
-Many discussion threads will be rejected, as main research contributions can often not be converted to a question with a single, unambiguous answer.
 
 ---
 
