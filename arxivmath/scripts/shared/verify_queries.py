@@ -107,6 +107,27 @@ def coerce_bool(value):
     return None
 
 
+def recover_cached_verification(annotation, key):
+    if annotation.get("keep") is not True:
+        return False
+    verification = annotation.get(key)
+    if not isinstance(verification, dict) or "keep" in verification:
+        return False
+    parsed = verification.get("parsed")
+    keep_value = coerce_bool(parsed.get("keep")) if isinstance(parsed, dict) else None
+    if keep_value is None:
+        parsed = extract_json(verification.get("raw", ""))
+        keep_value = coerce_bool(parsed.get("keep")) if isinstance(parsed, dict) else None
+    if keep_value is None:
+        return False
+    verification["parsed"] = parsed
+    verification["keep"] = keep_value
+    if "keep_original" not in annotation:
+        annotation["keep_original"] = annotation.get("keep")
+    annotation["keep"] = keep_value
+    return True
+
+
 def main():
     load_dotenv(find_dotenv(usecwd=True))
     parser = argparse.ArgumentParser(description="Verify kept LLM annotations against the criteria.")
@@ -166,6 +187,8 @@ def main():
     query_paper_ids = []
     for paper_id in paper_ids:
         annotation = load_annotation(args.paper_root, paper_id, annotation_filename)
+        if not args.overwrite and recover_cached_verification(annotation, verification_key):
+            save_annotation(args.paper_root, paper_id, annotation, annotation_filename)
         if not needs_verification(
             annotation,
             overwrite=args.overwrite,

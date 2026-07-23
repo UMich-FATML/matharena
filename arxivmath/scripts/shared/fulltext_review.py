@@ -71,14 +71,32 @@ def has_explicit_decision(record, key):
     return str(parsed.get("action", "")).strip().lower() in {"keep", "discard"}
 
 
+def has_explicit_keep(record):
+    if not isinstance(record, dict):
+        return False
+    keep_value = coerce_bool(record.get("keep"))
+    if keep_value is not None:
+        return keep_value
+    parsed = record.get("parsed")
+    if not isinstance(parsed, dict):
+        return False
+    keep_value = coerce_bool(parsed.get("keep"))
+    if keep_value is not None:
+        return keep_value
+    return str(parsed.get("action", "")).strip().lower() == "keep"
+
+
 def should_review(
     annotation,
     overwrite=False,
     key="full_text_review",
     lean_mode=False,
     require_explicit_decision=False,
+    required_keep_keys=(),
 ):
     if annotation.get("keep") is not True:
+        return False
+    if any(not has_explicit_keep(annotation.get(required_key)) for required_key in required_keep_keys):
         return False
     if not overwrite and key in annotation:
         if not require_explicit_decision or has_explicit_decision(annotation.get(key), key):
@@ -118,6 +136,13 @@ def main():
         "--require-explicit-decision",
         action="store_true",
         help="Retry malformed outputs and mutate keep only after an explicit keep/discard decision.",
+    )
+    parser.add_argument(
+        "--require-keep-key",
+        action="append",
+        default=[],
+        metavar="KEY",
+        help="Only review annotations with an explicit keep decision under KEY. Repeat for cumulative prerequisites.",
     )
     args = parser.parse_args()
 
@@ -164,6 +189,7 @@ def main():
             key=args.key,
             lean_mode=args.lean,
             require_explicit_decision=args.require_explicit_decision,
+            required_keep_keys=args.require_keep_key,
         ):
             review_ids.append(paper_id)
 

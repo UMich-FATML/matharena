@@ -44,8 +44,10 @@ def validate_statement_only(code):
         errors.append("The theorem must end exactly with `:= by sorry` and contain no proof or surrounding commands.")
     return errors
 
-def needs_formalization(annotation, overwrite=False):
+def needs_formalization(annotation, overwrite=False, required_keep_key=None):
     if annotation.get("keep") is not True:
+        return False
+    if required_keep_key and (annotation.get(required_keep_key) or {}).get("keep") is not True:
         return False
     if not annotation.get("statement"):
         return False
@@ -136,6 +138,12 @@ def main():
     parser.add_argument("--max-papers", type=int, default=None, help="Optional limit on paper ids to inspect.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing formalizations.")
     parser.add_argument(
+        "--require-keep-key",
+        default=None,
+        metavar="KEY",
+        help="Only formalize annotations with an explicit keep decision under KEY.",
+    )
+    parser.add_argument(
         "--max-tool-calls",
         type=int,
         default=24,
@@ -159,7 +167,11 @@ def main():
     query_paper_ids = []
     for paper_id in paper_ids:
         annotation = load_annotation(args.paper_root, paper_id, args.annotation_filename)
-        if not needs_formalization(annotation, overwrite=args.overwrite):
+        if not needs_formalization(
+            annotation,
+            overwrite=args.overwrite,
+            required_keep_key=args.require_keep_key,
+        ):
             continue
         prompt = prompt_template.format(
             statement=annotation.get("statement", "").strip(),

@@ -238,7 +238,7 @@ def _iter_string_literals(text):
             start = idx + 1
 
 
-def _find_json_fragment(text):
+def _iter_json_fragments(text):
     stack = []
     in_string = False
     escape = False
@@ -261,11 +261,32 @@ def _find_json_fragment(text):
             stack.append("}" if ch == "{" else "]")
             continue
         if ch in "}]":
-            if stack and ch == stack[-1]:
-                stack.pop()
-                if not stack:
-                    return text[start:idx + 1]
-    return None
+            if not stack or ch != stack[-1]:
+                stack = []
+                start = None
+                continue
+            stack.pop()
+            if not stack:
+                yield text[start:idx + 1]
+                start = None
+
+
+def _iter_json_code_fences(text):
+    cursor = 0
+    while True:
+        fence_start = text.find("```", cursor)
+        if fence_start < 0:
+            return
+        info_start = fence_start + 3
+        line_end = text.find("\n", info_start)
+        if line_end < 0:
+            return
+        fence_end = text.find("```", line_end + 1)
+        if fence_end < 0:
+            return
+        if text[info_start:line_end].strip().lower() == "json":
+            yield text[line_end + 1:fence_end].strip()
+        cursor = fence_end + 3
 
 
 def _parse_nested_json(value):
@@ -295,8 +316,19 @@ def extract_json(text):
             if nested is not None:
                 return nested
         return parsed
-    fragment = _find_json_fragment(text)
-    if fragment:
+
+    # Models sometimes explain their decision first, including mathematical set
+    # notation such as ``{x | ...}``, and put the requested object in a final
+    # JSON code fence. Prefer an explicitly labelled fence so those earlier
+    # braces cannot hide an otherwise valid response.
+    for fenced_json in _iter_json_code_fences(text):
+        parsed = _try_json_loads_with_repair(fenced_json)
+        if parsed is not None:
+            return parsed
+
+    # Try every balanced fragment, not only the first one. The first balanced
+    # braces in prose are often TeX or Lean syntax rather than JSON.
+    for fragment in _iter_json_fragments(text):
         parsed = _try_json_loads_with_repair(fragment)
         if parsed is not None:
             return parsed

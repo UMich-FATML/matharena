@@ -32,12 +32,20 @@ def test_fulltext_candidate_verification_renders_paper_and_proof():
 
 
 def test_statement_only_validator_rejects_proofs_helpers_and_imports():
-    from arxivmath.scripts.lean.formalize_statements import validate_statement_only
+    from arxivmath.scripts.lean.formalize_statements import needs_formalization, validate_statement_only
 
     assert validate_statement_only("theorem good : True := by sorry") == []
     assert validate_statement_only("theorem proved : True := by trivial")
     assert validate_statement_only("def helper := 1\ntheorem bad : True := by sorry")
     assert validate_statement_only("import Mathlib\ntheorem bad : True := by sorry")
+    assert needs_formalization(
+        {"keep": True, "statement": "A theorem", "verification": {"keep": True}},
+        required_keep_key="verification",
+    )
+    assert not needs_formalization(
+        {"keep": True, "statement": "A theorem", "verification": {"raw": "malformed"}},
+        required_keep_key="verification",
+    )
 
 
 def test_formalizer_uses_shared_tool_ceiling_and_one_final_compile(tmp_path, monkeypatch):
@@ -97,7 +105,11 @@ def test_formalizer_uses_shared_tool_ceiling_and_one_final_compile(tmp_path, mon
 
 
 def test_strict_review_retries_malformed_records():
-    from arxivmath.scripts.shared.fulltext_review import has_explicit_decision, should_review
+    from arxivmath.scripts.shared.fulltext_review import (
+        has_explicit_decision,
+        has_explicit_keep,
+        should_review,
+    )
 
     malformed = {"keep": True, "hidden_condition": {"parsed": {"rationale": "unclear"}}}
     assert should_review(
@@ -108,3 +120,71 @@ def test_strict_review_retries_malformed_records():
     )
     assert has_explicit_decision({"parsed": {"action": "keep"}}, "hidden_condition")
     assert has_explicit_decision({"parsed": {"keep": False}}, "solid_authors")
+    assert has_explicit_keep({"keep": True})
+    assert has_explicit_keep({"parsed": {"keep": "true"}})
+    assert has_explicit_keep({"parsed": {"action": "keep"}})
+    assert not has_explicit_keep({"parsed": {"keep": False}})
+    assert not has_explicit_keep({"parsed": {"rationale": "missing decision"}})
+
+
+def test_strict_review_requires_explicit_cumulative_prerequisite_passes():
+    from arxivmath.scripts.shared.fulltext_review import should_review
+
+    annotation = {
+        "keep": True,
+        "semantic_verification": {"keep": True},
+        "solid_authors": {"parsed": {"keep": True}},
+    }
+    required = ["semantic_verification", "solid_authors"]
+
+    assert should_review(annotation, key="hidden_condition", required_keep_keys=required)
+    annotation["solid_authors"] = {"parsed": {"keep": False}}
+    assert not should_review(annotation, key="hidden_condition", required_keep_keys=required)
+    annotation["solid_authors"] = {"parsed": {"rationale": "missing decision"}}
+    assert not should_review(annotation, key="hidden_condition", required_keep_keys=required)
+    del annotation["semantic_verification"]
+    assert not should_review(annotation, key="hidden_condition", required_keep_keys=required)
+
+
+def test_extract_json_ignores_math_braces_before_fenced_decision():
+    from matharena.arxivbench_utils import extract_json
+
+    response = """The admissible set is {t | t > 0}, so the statement aligns.
+```json
+{"keep": true, "rationale": "faithful"}
+```"""
+
+    assert extract_json(response) == {"keep": True, "rationale": "faithful"}
+
+
+def test_extract_json_tries_later_balanced_fragments():
+    from matharena.arxivbench_utils import extract_json
+
+    assert extract_json('The set {x | x > 0} is relevant. Decision: {"keep": false}') == {"keep": False}
+
+
+def test_cached_verification_recovers_newly_parseable_raw_without_another_query():
+    from arxivmath.scripts.shared.verify_queries import recover_cached_verification
+
+    annotation = {
+        "keep": True,
+        "semantic_verification": {
+            "raw": 'The set is {x | x > 0}.\n```json\n{"keep": false, "rationale": "mismatch"}\n```',
+        },
+    }
+
+    assert recover_cached_verification(annotation, "semantic_verification")
+    assert annotation["keep"] is False
+    assert annotation["keep_original"] is True
+    assert annotation["semantic_verification"]["keep"] is False
+    assert annotation["semantic_verification"]["parsed"]["rationale"] == "mismatch"
+    assert not recover_cached_verification(annotation, "semantic_verification")
+
+    rejected_downstream = {
+        "keep": False,
+        "semantic_verification": {
+            "raw": '```json\n{"keep": true, "rationale": "faithful"}\n```',
+        },
+    }
+    assert not recover_cached_verification(rejected_downstream, "semantic_verification")
+    assert rejected_downstream["keep"] is False
