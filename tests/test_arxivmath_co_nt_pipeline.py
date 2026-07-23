@@ -242,6 +242,50 @@ def test_extract_from_crawl_supports_custom_min_citations(tmp_path):
     assert _paper_dir(paper_root, "2401.02002").exists()
 
 
+def test_extract_from_crawl_limit_counts_unique_output_directories(tmp_path):
+    from arxivmath.scripts.train.ingest_arxiv_crawl import extract_from_crawl
+
+    crawl_root = tmp_path / "crawl"
+    paper_root = tmp_path / "paper_root"
+    crawl_root.mkdir()
+    _write_chunk(
+        crawl_root / "chunk_001.parquet",
+        [
+            {
+                "ext_arxiv": "2401.03001",
+                "primary_category": "math.HO",
+                "citationCount": 10,
+                "content_json": json.dumps({"text": "First copy"}),
+            },
+            {
+                "ext_arxiv": "2401.03001",
+                "primary_category": "math.HO",
+                "citationCount": 11,
+                "content_json": json.dumps({"text": "Duplicate copy"}),
+            },
+            {
+                "ext_arxiv": "2401.03002",
+                "primary_category": "math.HO",
+                "citationCount": 12,
+                "content_json": json.dumps({"text": "Second unique paper"}),
+            },
+        ],
+    )
+
+    summary = extract_from_crawl(
+        crawl_root,
+        paper_root,
+        limit=2,
+        primary_categories=["math.HO"],
+    )
+
+    assert summary.selected == 3
+    assert summary.written == 2
+    assert summary.skipped_duplicate_output_dir == 1
+    assert (paper_root / "2401.03001" / "full_text.md").read_text(encoding="utf-8") == "First copy\n"
+    assert (paper_root / "2401.03002" / "full_text.md").read_text(encoding="utf-8") == "Second unique paper\n"
+
+
 @pytest.mark.parametrize(
     ("arxiv_id", "expected"),
     [

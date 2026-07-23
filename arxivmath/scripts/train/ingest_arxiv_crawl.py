@@ -40,6 +40,7 @@ class ExtractionSummary:
     skipped_wrong_category: int = 0
     skipped_unselected_posted_month: int = 0
     skipped_missing_text: int = 0
+    skipped_duplicate_output_dir: int = 0
 
 
 @dataclass(frozen=True)
@@ -288,6 +289,7 @@ def extract_from_crawl(
         month_set,
     )
     summary = ExtractionSummary()
+    written_output_dirs: set[str] = set()
 
     for chunk_path in _chunk_paths(crawl_root):
         parquet_file = pq.ParquetFile(chunk_path)
@@ -309,10 +311,16 @@ def extract_from_crawl(
                     summary.skipped_missing_text += 1
                     continue
 
-                paper_dir = paper_root / safe_dir_name(arxiv_id)
+                output_dir_name = safe_dir_name(arxiv_id)
+                if output_dir_name in written_output_dirs:
+                    summary.skipped_duplicate_output_dir += 1
+                    continue
+
+                paper_dir = paper_root / output_dir_name
                 paper_dir.mkdir(parents=True, exist_ok=True)
                 _write_json(paper_dir / "metadata.json", _metadata_from_row(row, arxiv_id))
                 _write_text(paper_dir / "full_text.md", full_text)
+                written_output_dirs.add(output_dir_name)
                 summary.written += 1
                 if limit is not None and summary.written >= limit:
                     return summary
@@ -369,7 +377,8 @@ def main() -> None:
         f"skipped_wrong_category={summary.skipped_wrong_category}, "
         f"skipped_low_citation={summary.skipped_low_citation}, "
         f"skipped_unselected_posted_month={summary.skipped_unselected_posted_month}, "
-        f"skipped_missing_text={summary.skipped_missing_text}"
+        f"skipped_missing_text={summary.skipped_missing_text}, "
+        f"skipped_duplicate_output_dir={summary.skipped_duplicate_output_dir}"
     )
 
 
