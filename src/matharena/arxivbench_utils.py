@@ -208,14 +208,48 @@ def _repair_invalid_json_backslashes(text):
     return "".join(out)
 
 
+def _repair_trailing_json_commas(value):
+    out = []
+    in_string = False
+    escape = False
+    idx = 0
+    while idx < len(value):
+        ch = value[idx]
+        if in_string:
+            out.append(ch)
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            idx += 1
+            continue
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            idx += 1
+            continue
+        if ch == ",":
+            lookahead = idx + 1
+            while lookahead < len(value) and value[lookahead].isspace():
+                lookahead += 1
+            if lookahead < len(value) and value[lookahead] in "}]":
+                idx += 1
+                continue
+        out.append(ch)
+        idx += 1
+    return "".join(out)
+
+
 def _try_json_loads_with_repair(value):
-    parsed = _try_json_loads(value)
-    if parsed is not None:
-        return parsed
-    repaired = _repair_invalid_json_backslashes(value)
-    if repaired == value:
-        return None
-    return _try_json_loads(repaired)
+    candidate = value
+    for repair in (_repair_invalid_json_backslashes, _repair_trailing_json_commas):
+        parsed = _try_json_loads(candidate)
+        if parsed is not None:
+            return parsed
+        candidate = repair(candidate)
+    return _try_json_loads(candidate)
 
 
 def _iter_string_literals(text):

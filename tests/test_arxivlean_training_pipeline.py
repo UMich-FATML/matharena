@@ -163,6 +163,22 @@ def test_extract_json_tries_later_balanced_fragments():
     assert extract_json('The set {x | x > 0} is relevant. Decision: {"keep": false}') == {"keep": False}
 
 
+def test_extract_json_repairs_trailing_commas_outside_strings():
+    from matharena.arxivbench_utils import extract_json
+
+    response = """```json
+{
+  "keep": true,
+  "rationale": "A comma before }, is text, not syntax.",
+}
+```"""
+
+    assert extract_json(response) == {
+        "keep": True,
+        "rationale": "A comma before }, is text, not syntax.",
+    }
+
+
 def test_cached_verification_recovers_newly_parseable_raw_without_another_query():
     from arxivmath.scripts.shared.verify_queries import recover_cached_verification
 
