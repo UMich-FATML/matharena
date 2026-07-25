@@ -2,6 +2,36 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
+
+def test_annotation_save_preserves_checkpoint_when_replacement_write_fails(tmp_path, monkeypatch):
+    from matharena import arxivbench_utils
+
+    paper_root = tmp_path / "papers"
+    paper_dir = paper_root / "2401.00001"
+    paper_dir.mkdir(parents=True)
+    annotation_path = paper_dir / "metadata_lean_fulltext.json"
+    original = {"keep": True, "statement": "Existing checkpoint"}
+    annotation_path.write_text(json.dumps(original), encoding="utf-8")
+
+    def fail_after_partial_write(data, destination, **kwargs):
+        destination.write('{"keep":')
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(arxivbench_utils.json, "dump", fail_after_partial_write)
+
+    with pytest.raises(OSError, match="No space left on device"):
+        arxivbench_utils.save_annotation(
+            paper_root,
+            "2401.00001",
+            {"keep": False},
+            "metadata_lean_fulltext.json",
+        )
+
+    assert json.loads(annotation_path.read_text(encoding="utf-8")) == original
+    assert list(paper_dir.glob(".metadata_lean_fulltext.json.*.tmp")) == []
+
 
 def test_lean_fulltext_annotation_retries_until_statement_and_proof_exist():
     from arxivmath.scripts.shared.create_queries import needs_annotation

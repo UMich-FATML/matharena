@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import uuid
 
 
 def load_metadata(paper_root, paper_id):
@@ -77,8 +78,21 @@ def load_annotation(paper_root, paper_id, annotation_filename="llm_annotation.js
 
 def save_annotation(paper_root, paper_id, data, annotation_filename="llm_annotation.json"):
     path = os.path.join(paper_root, paper_id, annotation_filename)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, sort_keys=True)
+    temporary_path = os.path.join(
+        os.path.dirname(path),
+        f".{os.path.basename(path)}.{uuid.uuid4().hex}.tmp",
+    )
+    try:
+        with open(temporary_path, "x", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
 
 
 def download_pdf(paper_id):
